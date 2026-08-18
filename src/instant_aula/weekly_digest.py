@@ -16,19 +16,24 @@ from .emailer import send
 from .ollama_client import chat
 
 DIGEST_SYSTEM_PROMPT = """Du strukturerer et barns skoledata (Aula/Meebook), \
-givet som JSON (kalenderbegivenheder og en dag-for-dag ugeplan med opgaver), \
-til et ugebrev til en forælder.
+givet som JSON med to kilder: "calendar_events" (skema/kalender) og \
+"meebook_weekplan" (ugeplanens noter og opgaver pr. dag), til et ugebrev til \
+en forælder.
 
-Slå kalenderbegivenheder og ugeplan-opgaver sammen, så alt der hører til \
-samme dato står under den dato. Spring dage uden indhold over. Oversæt \
-IKKE og opfind ikke indhold -- brug teksten som den står (dansk).
+Gruppér begge kilder efter dato. Spring dage uden indhold i nogen af kilderne \
+over. Oversæt IKKE og opfind ikke indhold -- brug teksten som den står \
+(dansk). Medtag ALT indhold fra "meebook_weekplan" for hver dato, ikke kun et \
+udpluk.
 
 Svar KUN med et JSON-objekt på denne form, sorteret efter dato:
-{"days": [{"date": "YYYY-MM-DD", "items": ["kort punkt 1", "kort punkt 2"]}]}
+{"days": [{"date": "YYYY-MM-DD", \
+"events": ["kort punkt fra calendar_events", ...], \
+"notes": ["kort punkt fra meebook_weekplan", ...]}]}
 
-Hvert punkt i "items" skal være kort (én linje), fx "Kl. 8.00-8.45: Dansk med \
-Mette Bondesen" eller "HUSK LÆSEBOGEN!". Ingen andre nøgler, ingen forklarende \
-tekst uden for JSON'en."""
+Hvert punkt skal være kort (én linje), fx "Kl. 8.00-8.45: Dansk med Mette \
+Bondesen" for et event, eller "HUSK LÆSEBOGEN!" for en note. Brug en tom \
+liste [] hvis en kilde intet har for den dato -- udelad aldrig nøglerne. \
+Ingen andre nøgler, ingen forklarende tekst uden for JSON'en."""
 
 _WEEKDAYS_DA = ("Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag")
 
@@ -41,41 +46,53 @@ def _weekday_da(date_str: str) -> str:
     return f"{_WEEKDAYS_DA[date.weekday()]} d. {date.day}/{date.month}"
 
 
+def _cell_list_html(items: list) -> str:
+    if not items:
+        return "&mdash;"
+    return '<ul style="margin:0;padding-left:18px;">' + "".join(
+        f"<li>{html.escape(str(item))}</li>" for item in items
+    ) + "</ul>"
+
+
 def _render_html(days: list[dict]) -> str:
+    td = 'style="padding:8px 12px;border:1px solid #ddd;vertical-align:top;"'
     rows = []
     for day in days:
-        items = day.get("items") or []
-        if not items:
+        events, notes = day.get("events") or [], day.get("notes") or []
+        if not events and not notes:
             continue
-        items_html = "".join(f"<li>{html.escape(str(item))}</li>" for item in items)
         rows.append(
             "<tr>"
-            f'<td style="padding:8px 12px;border:1px solid #ddd;vertical-align:top;'
-            f'white-space:nowrap;font-weight:bold;">{html.escape(_weekday_da(day.get("date", "")))}</td>'
-            f'<td style="padding:8px 12px;border:1px solid #ddd;">'
-            f'<ul style="margin:0;padding-left:18px;">{items_html}</ul></td>'
+            f'<td {td} white-space:nowrap;font-weight:bold;">{html.escape(_weekday_da(day.get("date", "")))}</td>'
+            f"<td {td}>{_cell_list_html(events)}</td>"
+            f"<td {td}>{_cell_list_html(notes)}</td>"
             "</tr>"
         )
     if not rows:
         return "<p>Ingen planlagte aktiviteter fundet for denne uge.</p>"
 
+    th = 'style="padding:8px 12px;border:1px solid #ddd;text-align:left;background:#f2f2f2;"'
     return (
         '<table style="border-collapse:collapse;font-family:sans-serif;font-size:14px;">'
-        "<tr>"
-        '<th style="padding:8px 12px;border:1px solid #ddd;text-align:left;background:#f2f2f2;">Dag</th>'
-        '<th style="padding:8px 12px;border:1px solid #ddd;text-align:left;background:#f2f2f2;">Program</th>'
-        "</tr>" + "".join(rows) + "</table>"
+        f"<tr><th {th}>Dag</th><th {th}>Skema</th><th {th}>Noter/lektier</th></tr>"
+        + "".join(rows)
+        + "</table>"
     )
 
 
 def _render_plain_text(days: list[dict]) -> str:
     lines = []
     for day in days:
-        items = day.get("items") or []
-        if not items:
+        events, notes = day.get("events") or [], day.get("notes") or []
+        if not events and not notes:
             continue
         lines.append(_weekday_da(day.get("date", "")) + ":")
-        lines.extend(f"- {item}" for item in items)
+        if events:
+            lines.append("  Skema:")
+            lines.extend(f"  - {item}" for item in events)
+        if notes:
+            lines.append("  Noter/lektier:")
+            lines.extend(f"  - {item}" for item in notes)
         lines.append("")
     return "\n".join(lines).strip() or "Ingen planlagte aktiviteter fundet for denne uge."
 
