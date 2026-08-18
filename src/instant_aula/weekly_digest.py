@@ -12,14 +12,15 @@ from .config import load_settings
 from .emailer import send
 from .ollama_client import chat
 
-DIGEST_SYSTEM_PROMPT = """You write a short, friendly weekly digest for a \
-parent from their child's school data (Aula/Meebook), given as JSON \
-(calendar events and a day-by-day weekly plan with tasks). Summarize what's \
-happening day by day this week, any homework or things to bring, and any \
-dates to remember. Skip empty days silently. Keep it concise and in plain \
-language -- this replaces reading dozens of raw notifications. Output plain \
-text only: no JSON, no markdown headers, just short paragraphs or a simple \
-day-by-day list."""
+DIGEST_SYSTEM_PROMPT = """Du skriver et kort, venligt ugebrev til en forælder \
+ud fra deres barns skoledata (Aula/Meebook), givet som JSON (kalenderbegivenheder \
+og en dag-for-dag ugeplan med opgaver). Opsummer hvad der sker dag for dag \
+denne uge, lektier eller ting der skal med, og datoer der er værd at huske. \
+Spring stille tomme dage over. Hold det kortfattet og i almindeligt sprog -- \
+dette erstatter at læse snesevis af rå notifikationer. Skriv KUN selve \
+ugebrevet: ingen indledning som "Her er ugebrevet", ingen JSON, ingen \
+overskrifter, ingen kommentarer om kildedataen -- bare teksten selv, som korte \
+afsnit eller en simpel dag-for-dag liste, på dansk."""
 
 
 def main() -> int:
