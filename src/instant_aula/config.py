@@ -18,8 +18,6 @@ class Settings:
     aula_username: str
     aula_auth_method: str
     aula_mitid_password: str | None
-    ollama_host: str
-    ollama_model: str
     smtp_host: str
     smtp_port: int
     smtp_user: str
@@ -45,8 +43,6 @@ def load_settings() -> Settings:
         aula_username=_require("AULA_MITID_USERNAME"),
         aula_auth_method=os.environ.get("AULA_AUTH_METHOD", "app"),
         aula_mitid_password=os.environ.get("AULA_MITID_PASSWORD") or None,
-        ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
-        ollama_model=os.environ.get("OLLAMA_MODEL", "llama3.1:8b"),
         smtp_host=_require("SMTP_HOST"),
         smtp_port=int(os.environ.get("SMTP_PORT", "587")),
         smtp_user=_require("SMTP_USER"),
