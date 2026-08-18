@@ -1,41 +1,36 @@
-"""Fetch this week's Aula/Meebook plan, ask a local LLM to structure it into
-day-by-day items, and email it as a reader-friendly table. Run once a week
-(e.g. via cron).
+"""Fetch this week's Aula/Meebook plan and email it as a reader-friendly
+table. Run once a week (e.g. via cron).
+
+Deliberately does NOT involve the local LLM: the source data (calendar
+events, Meebook weekplan notes) is already clean, well-formatted Danish
+text -- including the teacher's own "___" section breaks between agenda
+items -- so grouping it by date and splitting it into bullets is a plain
+formatting job. Doing that in Python instead of asking a model to also
+correlate two different date formats (ISO timestamps vs. Danish day labels
+like "mandag 17. aug.") in one big pass is instant, never drops content, and
+preserves the teacher's exact original wording.
 """
 
 from __future__ import annotations
 
 import datetime
 import html
-import json
+import re
 import sys
+from collections import defaultdict
 
 from .aula_cli import run_aula
 from .config import load_settings
 from .emailer import send
-from .ollama_client import chat
-
-DIGEST_SYSTEM_PROMPT = """Du strukturerer et barns skoledata (Aula/Meebook), \
-givet som JSON med to kilder: "calendar_events" (skema/kalender) og \
-"meebook_weekplan" (ugeplanens noter og opgaver pr. dag), til et ugebrev til \
-en forælder.
-
-Gruppér begge kilder efter dato. Spring dage uden indhold i nogen af kilderne \
-over. Oversæt IKKE og opfind ikke indhold -- brug teksten som den står \
-(dansk). Medtag ALT indhold fra "meebook_weekplan" for hver dato, ikke kun et \
-udpluk.
-
-Svar KUN med et JSON-objekt på denne form, sorteret efter dato:
-{"days": [{"date": "YYYY-MM-DD", \
-"events": ["kort punkt fra calendar_events", ...], \
-"notes": ["kort punkt fra meebook_weekplan", ...]}]}
-
-Hvert punkt skal være kort (én linje), fx "Kl. 8.00-8.45: Dansk med Mette \
-Bondesen" for et event, eller "HUSK LÆSEBOGEN!" for en note. Brug en tom \
-liste [] hvis en kilde intet har for den dato -- udelad aldrig nøglerne. \
-Ingen andre nøgler, ingen forklarende tekst uden for JSON'en."""
 
 _WEEKDAYS_DA = ("Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag")
+
+_DA_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "maj": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "okt": 10, "nov": 11, "dec": 12,
+}
+_MEEBOOK_DATE_RE = re.compile(r"(\d{1,2})\.\s*([a-zæøå]+)", re.IGNORECASE)
+_SEPARATOR_RE = re.compile(r"_{3,}")
 
 
 def _weekday_da(date_str: str) -> str:
@@ -46,26 +41,81 @@ def _weekday_da(date_str: str) -> str:
     return f"{_WEEKDAYS_DA[date.weekday()]} d. {date.day}/{date.month}"
 
 
-def _cell_list_html(items: list) -> str:
+def _parse_meebook_date(date_label: str, year: int) -> str | None:
+    """Meebook day labels look like 'mandag 17. aug.' -- turn that into an ISO date."""
+    match = _MEEBOOK_DATE_RE.search(date_label or "")
+    if not match:
+        return None
+    month = _DA_MONTHS.get(match.group(2).lower()[:3])
+    if month is None:
+        return None
+    return f"{year:04d}-{month:02d}-{int(match.group(1)):02d}"
+
+
+def _split_note_lines(content: str) -> list[str]:
+    lines = []
+    for block in _SEPARATOR_RE.split(content or ""):
+        for line in block.splitlines():
+            line = line.strip()
+            if line:
+                lines.append(line)
+    return lines
+
+
+def _group_events(events: list[dict]) -> dict[str, list[str]]:
+    parsed = []
+    for event in events:
+        try:
+            start = datetime.datetime.fromisoformat(event["start_datetime"])
+            end = datetime.datetime.fromisoformat(event["end_datetime"])
+        except (KeyError, ValueError):
+            continue
+        parsed.append((start, end, event))
+
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for start, end, event in sorted(parsed, key=lambda p: p[0]):
+        line = f"Kl. {start:%H.%M}-{end:%H.%M}: {event.get('title') or '?'}"
+        if event.get("teacher_name"):
+            line += f" ({event['teacher_name']})"
+        if event.get("has_substitute") and event.get("substitute_name"):
+            line += f" -- vikar: {event['substitute_name']}"
+        if event.get("location"):
+            line += f" [{event['location']}]"
+        grouped[start.date().isoformat()].append(line)
+    return grouped
+
+
+def _group_notes(students: list[dict], year: int) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for student in students:
+        for day in student.get("week_plan", []):
+            date = _parse_meebook_date(day.get("date", ""), year)
+            if date is None:
+                continue
+            for task in day.get("tasks", []):
+                pill = task.get("pill")
+                prefix = f"[{pill}] " if pill else ""
+                grouped[date].extend(prefix + line for line in _split_note_lines(task.get("content")))
+    return grouped
+
+
+def _cell_list_html(items: list[str]) -> str:
     if not items:
         return "&mdash;"
     return '<ul style="margin:0;padding-left:18px;">' + "".join(
-        f"<li>{html.escape(str(item))}</li>" for item in items
+        f"<li>{html.escape(item)}</li>" for item in items
     ) + "</ul>"
 
 
-def _render_html(days: list[dict]) -> str:
+def _render_html(dates: list[str], events: dict[str, list[str]], notes: dict[str, list[str]]) -> str:
     td = 'style="padding:8px 12px;border:1px solid #ddd;vertical-align:top;"'
     rows = []
-    for day in days:
-        events, notes = day.get("events") or [], day.get("notes") or []
-        if not events and not notes:
-            continue
+    for date in dates:
         rows.append(
             "<tr>"
-            f'<td {td} white-space:nowrap;font-weight:bold;">{html.escape(_weekday_da(day.get("date", "")))}</td>'
-            f"<td {td}>{_cell_list_html(events)}</td>"
-            f"<td {td}>{_cell_list_html(notes)}</td>"
+            f'<td {td} white-space:nowrap;font-weight:bold;">{html.escape(_weekday_da(date))}</td>'
+            f"<td {td}>{_cell_list_html(events.get(date, []))}</td>"
+            f"<td {td}>{_cell_list_html(notes.get(date, []))}</td>"
             "</tr>"
         )
     if not rows:
@@ -80,19 +130,16 @@ def _render_html(days: list[dict]) -> str:
     )
 
 
-def _render_plain_text(days: list[dict]) -> str:
+def _render_plain_text(dates: list[str], events: dict[str, list[str]], notes: dict[str, list[str]]) -> str:
     lines = []
-    for day in days:
-        events, notes = day.get("events") or [], day.get("notes") or []
-        if not events and not notes:
-            continue
-        lines.append(_weekday_da(day.get("date", "")) + ":")
-        if events:
+    for date in dates:
+        lines.append(_weekday_da(date) + ":")
+        if events.get(date):
             lines.append("  Skema:")
-            lines.extend(f"  - {item}" for item in events)
-        if notes:
+            lines.extend(f"  - {item}" for item in events[date])
+        if notes.get(date):
             lines.append("  Noter/lektier:")
-            lines.extend(f"  - {item}" for item in notes)
+            lines.extend(f"  - {item}" for item in notes[date])
         lines.append("")
     return "\n".join(lines).strip() or "Ingen planlagte aktiviteter fundet for denne uge."
 
@@ -101,29 +148,17 @@ def main() -> int:
     settings = load_settings()
 
     summary = run_aula(settings, "weekly-summary", "--provider", "meebook")
+    year = int(summary.get("week", "").split("-W")[0] or datetime.date.today().year)
 
-    reply = chat(
-        settings.ollama_host,
-        settings.ollama_model,
-        DIGEST_SYSTEM_PROMPT,
-        json.dumps(summary, ensure_ascii=False),
-        json_mode=True,
-    )
-
-    try:
-        days = json.loads(reply)["days"]
-        plain_body = _render_plain_text(days)
-        html_body = _render_html(days)
-    except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        print(f"Could not parse structured digest ({exc}); falling back to raw model reply.")
-        plain_body = reply
-        html_body = None
+    events = _group_events(summary.get("calendar_events", []))
+    notes = _group_notes(summary.get("meebook_weekplan", []), year)
+    dates = sorted(set(events) | set(notes))
 
     send(
         settings,
         subject=f"Aula ugebrev - uge {summary.get('week', '')}",
-        body=plain_body,
-        html=html_body,
+        body=_render_plain_text(dates, events, notes),
+        html=_render_html(dates, events, notes),
     )
     print("Weekly digest sent.")
     return 0
