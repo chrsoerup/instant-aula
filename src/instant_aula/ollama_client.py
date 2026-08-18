@@ -51,9 +51,9 @@ def chat(host: str, model: str, system: str, user: str, json_mode: bool = False)
         method="POST",
     )
     try:
-        # CPU-only inference of an 8k+ token prompt can take several minutes;
+        # CPU-only inference of an 8k+ token prompt can take a long time;
         # this runs unattended via cron, so a generous bound is fine.
-        with urllib.request.urlopen(request, timeout=900) as response:
+        with urllib.request.urlopen(request, timeout=1800) as response:
             body = json.loads(response.read())
     except (urllib.error.URLError, TimeoutError) as exc:
         raise OllamaError(
