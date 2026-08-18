@@ -51,9 +51,11 @@ def chat(host: str, model: str, system: str, user: str, json_mode: bool = False)
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=300) as response:
+        # CPU-only inference of an 8k+ token prompt can take several minutes;
+        # this runs unattended via cron, so a generous bound is fine.
+        with urllib.request.urlopen(request, timeout=900) as response:
             body = json.loads(response.read())
-    except urllib.error.URLError as exc:
+    except (urllib.error.URLError, TimeoutError) as exc:
         raise OllamaError(
             f"Could not reach Ollama at {host} (is `ollama serve` running and the "
             f"model pulled with `ollama pull {model}`?): {exc}"
