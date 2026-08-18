@@ -144,10 +144,19 @@ def _render_plain_text(dates: list[str], events: dict[str, list[str]], notes: di
     return "\n".join(lines).strip() or "Ingen planlagte aktiviteter fundet for denne uge."
 
 
+def _next_iso_week() -> str:
+    """ISO week for 7 days from now -- lands in "next week" regardless of
+    which day of the current week this runs on (e.g. run on a Saturday to
+    get a look-ahead digest for the upcoming Mon-Sun week)."""
+    target = datetime.date.today() + datetime.timedelta(days=7)
+    iso_year, iso_week, _ = target.isocalendar()
+    return f"{iso_year}-W{iso_week}"
+
+
 def main() -> int:
     settings = load_settings()
 
-    summary = run_aula(settings, "weekly-summary", "--provider", "meebook")
+    summary = run_aula(settings, "weekly-summary", "--provider", "meebook", "--week", _next_iso_week())
     year = int(summary.get("week", "").split("-W")[0] or datetime.date.today().year)
 
     events = _group_events(summary.get("calendar_events", []))
