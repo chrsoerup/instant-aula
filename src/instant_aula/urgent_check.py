@@ -31,8 +31,11 @@ within about 24 hours.
 Everything else -- general announcements, event invites weeks out, routine \
 praise or photos, newsletters -- is NOT urgent, even if long or formally worded.
 
+The source text is Danish; keep any names, dates, and details as written rather \
+than translating them, since this parent reads Danish.
+
 Respond with ONLY a JSON object: {"urgent": true|false, "reason": "<one short \
-sentence in English explaining the verdict>"}."""
+sentence in Danish explaining the verdict>"}."""
 
 
 def _classify(settings: Settings, label: str, content: str) -> tuple[bool, str]:
