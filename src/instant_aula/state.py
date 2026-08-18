@@ -1,7 +1,6 @@
 """Local JSON state tracking which Aula items have already been processed.
 
-Keeps `urgent_check` from re-classifying (and re-emailing) the same message,
-post, or notification on every run.
+Keeps `urgent_check` from re-alerting on the same message or post on every run.
 """
 
 from __future__ import annotations
@@ -9,7 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-_CATEGORIES = ("seen_message_ids", "seen_post_ids", "seen_notification_ids")
+_CATEGORIES = ("seen_message_ids", "seen_post_ids")
 
 
 class State:
