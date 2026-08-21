@@ -22,6 +22,7 @@ from collections import defaultdict
 from .aula_cli import run_aula
 from .config import load_settings
 from .emailer import send
+from .notify_failure import notify_failure
 
 _WEEKDAYS_DA = ("Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag")
 
@@ -174,4 +175,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        notify_failure("weekly_digest", exc)
+        raise
