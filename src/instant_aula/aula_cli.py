@@ -30,7 +30,8 @@ def run_aula(settings: Settings, *args: str) -> Any:
     (QR scan in the terminal); tokens are then cached by the `aula` CLI
     itself at ~/.config/aula/tokens.json and refreshed automatically.
     """
-    cmd = ["uv", "run", "aula", "--output", "json", *args]
+    uv = os.environ.get("UV", "uv")
+    cmd = [uv, "run", "aula", "--output", "json", *args]
     env = {
         **os.environ,
         "AULA_MITID_USERNAME": settings.aula_username,
