@@ -5,6 +5,7 @@ description = "Weekly digest + must-read alerts from Aula, by email"
 requires-python = ">=3.14"
 dependencies = [
     "aula>=1.7.0",
+    "pillow>=12.3.0",
     "python-dotenv>=1.0.0",
 ]
 
