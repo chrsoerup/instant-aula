@@ -222,3 +222,4 @@ state/*.json
 logs/*.log
 !state/.gitkeep
 !logs/.gitkeep
+mitid_qr_*.png
