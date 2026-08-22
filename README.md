@@ -43,27 +43,36 @@ Built on the community-maintained, unofficial [`aula`](https://github.com/nickkn
 
 ## Scheduling
 
-Two cron jobs — adjust `crontab -e`, using absolute paths since cron runs with a minimal environment:
+Scheduling runs via two **Windows Scheduled Tasks** (`InstantAulaWeeklyDigest`, `InstantAulaUrgentCheck`), not WSL's own cron. WSL only runs while actively needed (e.g. a VS Code window keeps it alive) and doesn't start cron automatically on boot — a plain WSL crontab entry silently misses its slot whenever WSL wasn't already up, which is exactly what happened the first time this was scheduled. The Windows tasks invoke `wsl.exe` directly, which boots WSL on demand if it isn't running:
 
-```cron
-# Weekly digest, Monday 07:00
-0 7 * * 1 cd /home/cs/github/instant-aula && /home/cs/.local/bin/uv run python -m instant_aula.weekly_digest >> logs/weekly_digest.log 2>&1
+```powershell
+# Weekly digest, Saturdays 08:00 (targets the upcoming week)
+wsl.exe -d Ubuntu -u cs -- bash -lc "cd ~/github/instant-aula && /home/cs/.local/bin/uv run python -m instant_aula.weekly_digest >> logs/weekly_digest.log 2>&1"
 
 # Must-read check, every 2 hours
-0 */2 * * * cd /home/cs/github/instant-aula && /home/cs/.local/bin/uv run python -m instant_aula.urgent_check >> logs/urgent_check.log 2>&1
+wsl.exe -d Ubuntu -u cs -- bash -lc "cd ~/github/instant-aula && /home/cs/.local/bin/uv run python -m instant_aula.urgent_check >> logs/urgent_check.log 2>&1"
 ```
 
-**WSL note:** cron only runs while this WSL instance is up, and WSL doesn't start cron automatically. Either start it once per session (`sudo service cron start`, or add it to your shell profile) or have a Windows Scheduled Task wake WSL on the same cadence if you need this to be reliable while your PC is on but WSL isn't already running.
+Manage them via `Get-ScheduledTask`/`Set-ScheduledTask`/`Unregister-ScheduledTask` in PowerShell, or the Task Scheduler GUI. Two default settings had to be overridden after creation, since both would otherwise silently block a laptop from ever running these:
+
+- `DisallowStartIfOnBatteries` / `StopIfGoingOnBatteries` → disabled (the task must run whether or not the laptop is plugged in).
+- `WakeToRun` → enabled (so the 08:00 Saturday run actually wakes a sleeping machine instead of getting skipped).
+
+Do **not** also run these via a WSL crontab — with both active, a run where WSL happens to already be up would fire the job twice: two emails, and a real risk of two processes racing on `state/state.json` and corrupting the must-read dedup tracking.
+
+`aula_cli.py` shells out to `uv` via an absolute path (`/home/cs/.local/bin/uv`, overridable via the `UV` env var) rather than relying on `$PATH` — cron/Task Scheduler environments don't include `~/.local/bin` by default, and a bare `"uv"` lookup fails there even though it works fine in an interactive shell.
 
 ## How it works
 
 - `aula_cli.py` shells out to the `aula` CLI with `--output json` rather than importing its internals directly, since those are explicitly called out as subject to change.
 - `weekly_digest.py` calls `aula weekly-summary --provider meebook`, groups calendar events and Meebook weekplan notes by date in Python (parsing both the ISO calendar timestamps and Meebook's Danish day labels like "mandag 17. aug."), splits weekplan text on the teacher's own `___` section breaks into bullets, and renders an HTML table — all without touching an LLM, so the teacher's original wording is preserved exactly.
-- `urgent_check.py` calls `aula messages --unread` and `aula posts`; every new unread message is forwarded as-is, and posts are alerted only when Aula's own `is_important` flag is set.
+- `urgent_check.py` calls `aula messages --unread` and `aula posts`; every new unread message is forwarded as-is, and posts are alerted only when Aula's own `is_important` flag is set. Post attachments (e.g. PDFs) are downloaded from their signed URL and attached to the alert email.
 - Both scripts are safe to re-run: `state/state.json` ensures items are never re-alerted once seen.
+- `notify_failure.py`: if either script crashes for any reason (including MitID auth expiring), it emails a `[Aula] <job> failed` notice with the traceback via the same SMTP path — so a broken scheduled run surfaces immediately instead of "I haven't gotten a digest in three weeks."
 
 ## Known limitations
 
 - MitID auth is interactive on first login and whenever the refresh token expires — this can't be made fully unattended.
 - This relies on an unofficial, reverse-engineered API; if Aula changes its backend, `aula` CLI commands may break until the upstream project catches up.
 - Un-flagged posts and notifications (photo uploads, presence changes, etc.) are never surfaced, even if genuinely important — there's no LLM safety net for content the school forgot to mark important. If that turns out to be a real gap in practice, an LLM-based fallback (Ollama is already installed) could be reintroduced for that narrower case.
+- The MitID app-login QR flow requires scanning **both** QR codes shown, in sequence (they encode two halves of one verification value) — easy to miss, and the failure mode if you only scan one isn't an obvious error message.
