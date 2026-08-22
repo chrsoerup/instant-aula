@@ -30,7 +30,10 @@ def run_aula(settings: Settings, *args: str) -> Any:
     (QR scan in the terminal); tokens are then cached by the `aula` CLI
     itself at ~/.config/aula/tokens.json and refreshed automatically.
     """
-    uv = os.environ.get("UV", "uv")
+    # Cron gives jobs a minimal PATH that doesn't include ~/.local/bin, where
+    # uv actually lives -- a bare "uv" lookup fails there. Default to the
+    # absolute path instead of relying on PATH; still overridable via UV.
+    uv = os.environ.get("UV", "/home/cs/.local/bin/uv")
     cmd = [uv, "run", "aula", "--output", "json", *args]
     env = {
         **os.environ,
