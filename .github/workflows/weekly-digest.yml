@@ -1,0 +1,53 @@
+name: Weekly digest
+
+on:
+  schedule:
+    # 08:00 in Denmark -- GitHub Actions cron is UTC and doesn't follow DST,
+    # so this drifts to 07:00 local during CET (winter); accepted trade-off.
+    - cron: "0 6 * * 6"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    env:
+      AULA_MITID_USERNAME: ${{ secrets.AULA_MITID_USERNAME }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      SMTP_FROM: ${{ secrets.SMTP_FROM }}
+      SMTP_TO: ${{ secrets.SMTP_TO }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Restore MitID token cache
+        env:
+          AULA_TOKENS_JSON: ${{ secrets.AULA_TOKENS_JSON }}
+        run: |
+          mkdir -p ~/.config/aula
+          echo "$AULA_TOKENS_JSON" > ~/.config/aula/tokens.json
+
+      - name: Run weekly digest
+        run: uv run python -m instant_aula.weekly_digest
+
+      # The MitID token file gets rewritten on every refresh, not just fresh
+      # logins -- persist whatever's there after the run (even if the run
+      # itself failed) so the next run isn't stuck with an already-rotated,
+      # now-invalid refresh token.
+      - name: Persist refreshed MitID token
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.SECRETS_PAT }}
+        run: gh secret set AULA_TOKENS_JSON --body "$(cat ~/.config/aula/tokens.json)"

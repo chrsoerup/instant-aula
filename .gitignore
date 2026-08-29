@@ -217,9 +217,10 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# instant-aula runtime state (not secrets, but not source either)
-state/*.json
+# instant-aula runtime state
+# state/state.json IS tracked -- GitHub Actions runners are ephemeral, so the
+# must-read dedup tracking needs to live in git to persist across runs. It
+# only contains numeric message/post IDs, nothing sensitive.
 logs/*.log
-!state/.gitkeep
 !logs/.gitkeep
 mitid_qr_*.png
