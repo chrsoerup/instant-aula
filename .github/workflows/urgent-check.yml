@@ -8,6 +8,13 @@ on:
 permissions:
   contents: write
 
+# Shared with weekly-digest.yml's group -- both rewrite the same
+# AULA_TOKENS_JSON secret on every run, so overlapping runs of either
+# workflow could corrupt each other's MitID session. Queue, don't overlap.
+concurrency:
+  group: instant-aula-mitid-session
+  cancel-in-progress: false
+
 jobs:
   urgent-check:
     runs-on: ubuntu-latest

@@ -10,6 +10,14 @@ on:
 permissions:
   contents: write
 
+# Both workflows share and rewrite the same AULA_TOKENS_JSON secret on every
+# run (the MitID token is rotated on refresh) -- overlapping runs racing to
+# read/write it can corrupt each other's session. Queue instead of running
+# concurrently, across both workflows.
+concurrency:
+  group: instant-aula-mitid-session
+  cancel-in-progress: false
+
 jobs:
   digest:
     runs-on: ubuntu-latest
