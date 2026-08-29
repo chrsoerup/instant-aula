@@ -157,12 +157,27 @@ def _next_iso_week() -> str:
 def main() -> int:
     settings = load_settings()
 
-    summary = run_aula(settings, "weekly-summary", "--provider", "meebook", "--week", _next_iso_week())
+    week = _next_iso_week()
+    summary = run_aula(settings, "weekly-summary", "--provider", "meebook", "--week", week)
     year = int(summary.get("week", "").split("-W")[0] or datetime.date.today().year)
 
+    raw_task_count = sum(
+        len(day.get("tasks", []))
+        for student in summary.get("meebook_weekplan", [])
+        for day in student.get("week_plan", [])
+    )
     events = _group_events(summary.get("calendar_events", []))
     notes = _group_notes(summary.get("meebook_weekplan", []), year)
     dates = sorted(set(events) | set(notes))
+
+    # Diagnostic trail for the "notes came back empty" issue seen once so
+    # far -- pins down whether a recurrence is missing data from Aula's own
+    # API, or a bug in the grouping step, without needing to reproduce it live.
+    print(
+        f"Fetched week {summary.get('week')}: requested={week}, "
+        f"raw_meebook_tasks={raw_task_count}, days_with_events={len(events)}, "
+        f"days_with_notes={len(notes)}, total_note_items={sum(len(v) for v in notes.values())}"
+    )
 
     send(
         settings,
