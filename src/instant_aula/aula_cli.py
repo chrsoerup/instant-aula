@@ -69,6 +69,12 @@ def run_aula(settings: Settings, *args: str) -> Any:
             timeout=120,
         )
         if result.returncode == 0:
+            # Some failures inside the CLI (e.g. one widget fetch failing)
+            # are caught internally and only logged as a warning, not
+            # raised -- the command still exits 0 with incomplete data.
+            # Surface that instead of silently discarding it.
+            if result.stderr.strip():
+                print(f"[aula stderr] {result.stderr.strip()}")
             return json.loads(result.stdout)
 
         transient = any(marker in result.stderr for marker in _TRANSIENT_MARKERS)
