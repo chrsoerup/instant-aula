@@ -60,7 +60,9 @@ Manage them via `Get-ScheduledTask`/`Set-ScheduledTask`/`Unregister-ScheduledTas
 
 Do **not** also run these via a WSL crontab — with both active, a run where WSL happens to already be up would fire the job twice: two emails, and a real risk of two processes racing on `state/state.json` and corrupting the must-read dedup tracking.
 
-`aula_cli.py` shells out to `uv` via an absolute path (`/home/cs/.local/bin/uv`, overridable via the `UV` env var) rather than relying on `$PATH` — cron/Task Scheduler environments don't include `~/.local/bin` by default, and a bare `"uv"` lookup fails there even though it works fine in an interactive shell.
+`aula_cli.py` shells out to `uv` via an absolute path (`/home/cs/.local/bin/uv`, overridable via the `UV` env var) rather than relying on `$PATH` — cron/Task Scheduler environments don't include `~/.local/bin` by default, and a bare `"uv"` lookup fails there even though it works fine in an interactive shell. It also retries transient network failures (e.g. DNS not ready right after a machine wakes from sleep) a few times before giving up.
+
+**A cloud-hosted scheduler (GitHub Actions) was tried and deliberately reverted.** It solved the weekend-off problem — runners are always on regardless of the local machine's state — but routes your MitID session and your kid's school data through whichever datacenter GitHub happens to schedule the runner in (confirmed as US-based, not EU, with no way to pin the region on a personal/free plan). That's not an acceptable trade-off for a minor's school data, so this stays local-only. See "Known limitations" for what that costs.
 
 ## How it works
 
@@ -72,6 +74,7 @@ Do **not** also run these via a WSL crontab — with both active, a run where WS
 
 ## Known limitations
 
+- **The digest/must-read checks simply don't run while the PC is fully powered off** (as opposed to asleep) — e.g. weekends, if that's your habit. Windows Task Scheduler's `WakeToRun` can wake a *sleeping* machine, but nothing software-level can power on a machine that's genuinely off; that needs BIOS-level Wake-on-LAN/RTC alarm support (not configured here) or always-on hardware. A cloud-hosted scheduler would fix this, but was ruled out on privacy grounds (see Scheduling) — deliberately accepted as-is rather than routing a child's school data through infrastructure outside your control.
 - MitID auth is interactive on first login and whenever the refresh token expires — this can't be made fully unattended.
 - This relies on an unofficial, reverse-engineered API; if Aula changes its backend, `aula` CLI commands may break until the upstream project catches up.
 - Un-flagged posts and notifications (photo uploads, presence changes, etc.) are never surfaced, even if genuinely important — there's no LLM safety net for content the school forgot to mark important. If that turns out to be a real gap in practice, an LLM-based fallback (Ollama is already installed) could be reintroduced for that narrower case.
