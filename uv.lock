@@ -245,6 +245,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aula" },
+    { name = "httpx" },
     { name = "pillow" },
     { name = "python-dotenv" },
 ]
@@ -252,6 +253,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aula", specifier = ">=1.7.0" },
+    { name = "httpx", specifier = ">=0.28.0" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
 ]
