@@ -25,6 +25,9 @@ class Settings:
     smtp_from: str
     smtp_to: str
     state_file: Path
+    ollama_host: str
+    ollama_model: str
+    ollama_timeout: float
 
 
 def _require(name: str) -> str:
@@ -50,4 +53,7 @@ def load_settings() -> Settings:
         smtp_from=os.environ.get("SMTP_FROM") or os.environ["SMTP_USER"],
         smtp_to=_require("SMTP_TO"),
         state_file=state_dir / "state.json",
+        ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+        ollama_model=os.environ.get("OLLAMA_MODEL", "llama3.1:8b"),
+        ollama_timeout=float(os.environ.get("OLLAMA_TIMEOUT", "300")),
     )
