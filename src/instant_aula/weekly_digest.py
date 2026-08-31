@@ -1,14 +1,20 @@
 """Fetch this week's Aula/Meebook plan and email it as a reader-friendly
 table. Run once a week (e.g. via cron).
 
-Deliberately does NOT involve the local LLM: the source data (calendar
-events, Meebook weekplan notes) is already clean, well-formatted Danish
-text -- including the teacher's own "___" section breaks between agenda
-items -- so grouping it by date and splitting it into bullets is a plain
-formatting job. Doing that in Python instead of asking a model to also
-correlate two different date formats (ISO timestamps vs. Danish day labels
-like "mandag 17. aug.") in one big pass is instant, never drops content, and
-preserves the teacher's exact original wording.
+Grouping and formatting deliberately does NOT involve the local LLM: the
+source data (calendar events, Meebook weekplan notes) is already clean,
+well-formatted Danish text -- including the teacher's own "___" section
+breaks between agenda items -- so grouping it by date and splitting it
+into bullets is a plain formatting job. Doing that in Python instead of
+asking a model to also correlate two different date formats (ISO
+timestamps vs. Danish day labels like "mandag 17. aug.") in one big pass
+is instant, never drops content, and preserves the teacher's exact
+original wording.
+
+A separate, optional pass (see highlights.py) *does* use a local Ollama
+model, to pull out the handful of parent-actionable reminders (bring gym
+clothes, bring the "læsemappe", homework due, etc.) buried in that same
+text -- a genuine judgment call, unlike the deterministic grouping above.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from collections import defaultdict
 from .aula_cli import run_aula
 from .config import load_settings
 from .emailer import send
+from .highlights import extract_highlights
 from .notify_failure import notify_failure
 
 _WEEKDAYS_DA = ("Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag")
@@ -131,6 +138,29 @@ def _render_html(dates: list[str], events: dict[str, list[str]], notes: dict[str
     )
 
 
+def _render_highlights_html(highlights: list[tuple[str, str]] | None) -> str:
+    if not highlights:
+        return ""
+    items = "".join(
+        f"<li><strong>{html.escape(_weekday_da(date))}:</strong> {html.escape(text)}</li>"
+        for date, text in sorted(highlights)
+    )
+    return (
+        '<div style="margin-bottom:16px;padding:10px 14px;background:#fff8e1;'
+        'border:1px solid #f0d878;border-radius:4px;font-family:sans-serif;font-size:14px;">'
+        '<strong>Husk:</strong>'
+        f'<ul style="margin:6px 0 0;padding-left:18px;">{items}</ul></div>'
+    )
+
+
+def _render_highlights_plain(highlights: list[tuple[str, str]] | None) -> str:
+    if not highlights:
+        return ""
+    lines = ["Husk:"]
+    lines.extend(f"- {_weekday_da(date)}: {text}" for date, text in sorted(highlights))
+    return "\n".join(lines) + "\n\n"
+
+
 def _render_plain_text(dates: list[str], events: dict[str, list[str]], notes: dict[str, list[str]]) -> str:
     lines = []
     for date in dates:
@@ -169,6 +199,7 @@ def main() -> int:
     events = _group_events(summary.get("calendar_events", []))
     notes = _group_notes(summary.get("meebook_weekplan", []), year)
     dates = sorted(set(events) | set(notes))
+    highlights = extract_highlights(settings, dates, events, notes)
 
     # Diagnostic trail for the "notes came back empty" issue seen once so
     # far -- pins down whether a recurrence is missing data from Aula's own
@@ -176,14 +207,15 @@ def main() -> int:
     print(
         f"Fetched week {summary.get('week')}: requested={week}, "
         f"raw_meebook_tasks={raw_task_count}, days_with_events={len(events)}, "
-        f"days_with_notes={len(notes)}, total_note_items={sum(len(v) for v in notes.values())}"
+        f"days_with_notes={len(notes)}, total_note_items={sum(len(v) for v in notes.values())}, "
+        f"highlights={len(highlights) if highlights else 0}"
     )
 
     send(
         settings,
         subject=f"Aula ugebrev - uge {summary.get('week', '')}",
-        body=_render_plain_text(dates, events, notes),
-        html=_render_html(dates, events, notes),
+        body=_render_highlights_plain(highlights) + _render_plain_text(dates, events, notes),
+        html=_render_highlights_html(highlights) + _render_html(dates, events, notes),
     )
     print("Weekly digest sent.")
     return 0
