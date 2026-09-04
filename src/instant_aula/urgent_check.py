@@ -1,4 +1,5 @@
-"""Poll Aula for new messages and important posts; email them immediately.
+"""Poll Aula for new messages and important posts; push them as Home
+Assistant notifications immediately.
 
 Deterministic, no LLM: a new message is personally addressed by a teacher
 (not a broadcast), so it's forwarded as-is; a post is only alerted on if
@@ -15,35 +16,16 @@ re-alerted.
 from __future__ import annotations
 
 import sys
-import urllib.error
-import urllib.request
 
 from .aula_cli import run_aula
 from .config import Settings, load_settings
-from .emailer import send
+from .ha_notify import notify
 from .html_utils import strip_html
 from .notify_failure import notify_failure
 from .state import State
 
-Attachment = tuple[str, bytes]
 
-
-def _download_attachments(post: dict) -> list[Attachment]:
-    downloaded = []
-    for attachment in post.get("attachments") or []:
-        name = attachment.get("name") or "vedhaeftet_fil"
-        url = (attachment.get("file") or {}).get("url")
-        if not url:
-            continue
-        try:
-            with urllib.request.urlopen(url, timeout=30) as response:
-                downloaded.append((name, response.read()))
-        except (urllib.error.URLError, TimeoutError) as exc:
-            print(f"Could not download attachment '{name}': {exc}")
-    return downloaded
-
-
-def _check_messages(settings: Settings, state: State) -> list[tuple[str, str, list[Attachment]]]:
+def _check_messages(settings: Settings, state: State) -> list[tuple[str, str, int]]:
     alerts = []
     threads = run_aula(settings, "messages", "--unread", "--limit", "20")
     for thread in threads:
@@ -55,12 +37,12 @@ def _check_messages(settings: Settings, state: State) -> list[tuple[str, str, li
         )
         if not state.is_first_run:
             subject = thread.get("subject") or "(uden emne)"
-            alerts.append((f"Besked: {subject}", body or "(intet indhold)", []))
+            alerts.append((f"Besked: {subject}", body or "(intet indhold)", 0))
         state.mark_seen("seen_message_ids", thread_id)
     return alerts
 
 
-def _check_important_posts(settings: Settings, state: State) -> list[tuple[str, str, list[Attachment]]]:
+def _check_important_posts(settings: Settings, state: State) -> list[tuple[str, str, int]]:
     alerts = []
     posts = run_aula(settings, "posts", "--limit", "10")
     for post in posts:
@@ -70,8 +52,8 @@ def _check_important_posts(settings: Settings, state: State) -> list[tuple[str, 
         if post.get("is_important") and not state.is_first_run:
             title = post.get("title") or "(uden titel)"
             body = strip_html(post.get("content_html"))
-            attachments = _download_attachments(post)
-            alerts.append((f"Vigtigt opslag: {title}", body or "(intet indhold)", attachments))
+            attachment_count = len(post.get("attachments") or [])
+            alerts.append((f"Vigtigt opslag: {title}", body or "(intet indhold)", attachment_count))
         state.mark_seen("seen_post_ids", post_id)
     return alerts
 
@@ -93,9 +75,12 @@ def main() -> int:
         print("No new must-read items.")
         return 0
 
-    for label, body, attachments in alerts:
-        print(f"ALERT: {label}" + (f" ({len(attachments)} attachment(s))" if attachments else ""))
-        send(settings, subject=f"[Aula] {label}", body=body, attachments=attachments)
+    for label, body, attachment_count in alerts:
+        print(f"ALERT: {label}" + (f" ({attachment_count} attachment(s))" if attachment_count else ""))
+        message = body
+        if attachment_count:
+            message += f"\n\n({attachment_count} vedhæftet fil(er) - se Aula for indhold)"
+        notify(settings, title=f"[Aula] {label}", message=message)
 
     return 0
 

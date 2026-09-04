@@ -1,0 +1,20 @@
+name: "Instant Aula"
+version: "1.0.0"
+slug: "instant_aula"
+description: "Weekly Aula school digest and urgent alerts, pushed via Home Assistant notifications"
+arch:
+  - aarch64
+  - amd64
+startup: services
+boot: auto
+homeassistant_api: true
+options:
+  aula_mitid_username: ""
+  aula_auth_method: "app"
+  aula_mitid_password: ""
+  ha_notify_service: ""
+schema:
+  aula_mitid_username: "str"
+  aula_auth_method: "list(app|token)"
+  aula_mitid_password: "password"
+  ha_notify_service: "str"

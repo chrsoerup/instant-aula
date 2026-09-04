@@ -1,5 +1,5 @@
-"""Fetch this week's Aula/Meebook plan and email it as a reader-friendly
-table. Run once a week (e.g. via cron).
+"""Fetch this week's Aula/Meebook plan and push it as a Home Assistant
+notification. Run once a week (e.g. via cron).
 
 Grouping and formatting deliberately does NOT involve the local LLM: the
 source data (calendar events, Meebook weekplan notes) is already clean,
@@ -20,14 +20,13 @@ text -- a genuine judgment call, unlike the deterministic grouping above.
 from __future__ import annotations
 
 import datetime
-import html
 import re
 import sys
 from collections import defaultdict
 
 from .aula_cli import run_aula
 from .config import load_settings
-from .emailer import send
+from .ha_notify import notify
 from .highlights import extract_highlights
 from .notify_failure import notify_failure
 
@@ -107,52 +106,6 @@ def _group_notes(students: list[dict], year: int) -> dict[str, list[str]]:
     return grouped
 
 
-def _cell_list_html(items: list[str]) -> str:
-    if not items:
-        return "&mdash;"
-    return '<ul style="margin:0;padding-left:18px;">' + "".join(
-        f"<li>{html.escape(item)}</li>" for item in items
-    ) + "</ul>"
-
-
-def _render_html(dates: list[str], events: dict[str, list[str]], notes: dict[str, list[str]]) -> str:
-    td = 'style="padding:8px 12px;border:1px solid #ddd;vertical-align:top;"'
-    rows = []
-    for date in dates:
-        rows.append(
-            "<tr>"
-            f'<td {td} white-space:nowrap;font-weight:bold;">{html.escape(_weekday_da(date))}</td>'
-            f"<td {td}>{_cell_list_html(events.get(date, []))}</td>"
-            f"<td {td}>{_cell_list_html(notes.get(date, []))}</td>"
-            "</tr>"
-        )
-    if not rows:
-        return "<p>Ingen planlagte aktiviteter fundet for denne uge.</p>"
-
-    th = 'style="padding:8px 12px;border:1px solid #ddd;text-align:left;background:#f2f2f2;"'
-    return (
-        '<table style="border-collapse:collapse;font-family:sans-serif;font-size:14px;">'
-        f"<tr><th {th}>Dag</th><th {th}>Skema</th><th {th}>Noter/lektier</th></tr>"
-        + "".join(rows)
-        + "</table>"
-    )
-
-
-def _render_highlights_html(highlights: list[tuple[str, str]] | None) -> str:
-    if not highlights:
-        return ""
-    items = "".join(
-        f"<li><strong>{html.escape(_weekday_da(date))}:</strong> {html.escape(text)}</li>"
-        for date, text in sorted(highlights)
-    )
-    return (
-        '<div style="margin-bottom:16px;padding:10px 14px;background:#fff8e1;'
-        'border:1px solid #f0d878;border-radius:4px;font-family:sans-serif;font-size:14px;">'
-        '<strong>Husk:</strong>'
-        f'<ul style="margin:6px 0 0;padding-left:18px;">{items}</ul></div>'
-    )
-
-
 def _render_highlights_plain(highlights: list[tuple[str, str]] | None) -> str:
     if not highlights:
         return ""
@@ -211,11 +164,10 @@ def main() -> int:
         f"highlights={len(highlights) if highlights else 0}"
     )
 
-    send(
+    notify(
         settings,
-        subject=f"Aula ugebrev - uge {summary.get('week', '')}",
-        body=_render_highlights_plain(highlights) + _render_plain_text(dates, events, notes),
-        html=_render_highlights_html(highlights) + _render_html(dates, events, notes),
+        title=f"Aula ugebrev - uge {summary.get('week', '')}",
+        message=_render_highlights_plain(highlights) + _render_plain_text(dates, events, notes),
     )
     print("Weekly digest sent.")
     return 0
