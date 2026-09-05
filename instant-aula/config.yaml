@@ -1,5 +1,5 @@
 name: "Instant Aula"
-version: "1.0.0"
+version: "1.0.1"
 slug: "instant_aula"
 description: "Weekly Aula school digest and urgent alerts, pushed via Home Assistant notifications"
 arch:
@@ -16,5 +16,5 @@ options:
 schema:
   aula_mitid_username: "str"
   aula_auth_method: "list(app|token)"
-  aula_mitid_password: "password"
+  aula_mitid_password: "password?"
   ha_notify_service: "str"
