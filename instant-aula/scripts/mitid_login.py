@@ -26,8 +26,16 @@ from aula.auth.browser_client import BrowserClient
 from aula.auth.exceptions import MitIDError
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_QR1_PATH = _PROJECT_ROOT / "mitid_qr_1.png"
-_QR2_PATH = _PROJECT_ROOT / "mitid_qr_2.png"
+_HA_WWW = Path("/config/www")
+# Inside the Home Assistant add-on, save under HA's own www/ folder so the
+# QR is viewable at http://<ha-host>:8123/local/... from any browser on the
+# LAN (e.g. your PC), without needing shell/file access into the container --
+# MitID needs the QR scanned by your phone, so it can't be viewed on the same
+# device that's scanning it anyway. Falls back to the project root for local/
+# WSL testing, where the original VS Code file-preview workflow still works.
+_QR_DIR = _HA_WWW if _HA_WWW.is_dir() else _PROJECT_ROOT
+_QR1_PATH = _QR_DIR / "instant_aula_mitid_qr_1.png"
+_QR2_PATH = _QR_DIR / "instant_aula_mitid_qr_2.png"
 
 _first_seen: float | None = None
 _last_payload: bytes | None = None
@@ -62,9 +70,14 @@ def _print_qr_codes_image(qr1, qr2) -> None:
     print("=" * 60)
     print(f"[diag] call #{_call_count}, t+{elapsed:.1f}s, payload changed since last call: {changed}")
     print("SCAN THESE QR CODES WITH YOUR MITID APP")
-    print(f"QR CODE 1 (scan this first):  {_QR1_PATH}")
-    print(f"QR CODE 2 (scan this second): {_QR2_PATH}")
-    print("Open each file (e.g. click it in the VS Code file explorer to preview it) and scan.")
+    if _QR_DIR == _HA_WWW:
+        print("Open these on a computer/browser (not the phone doing the scanning):")
+        print("  QR CODE 1 (scan first):  http://homeassistant.local:8123/local/instant_aula_mitid_qr_1.png")
+        print("  QR CODE 2 (scan second): http://homeassistant.local:8123/local/instant_aula_mitid_qr_2.png")
+    else:
+        print(f"QR CODE 1 (scan this first):  {_QR1_PATH}")
+        print(f"QR CODE 2 (scan this second): {_QR2_PATH}")
+        print("Open each file (e.g. click it in the VS Code file explorer to preview it) and scan.")
     print("=" * 60)
 
 

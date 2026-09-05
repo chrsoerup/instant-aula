@@ -3,12 +3,22 @@ set -euo pipefail
 
 mkdir -p /data/home /data/state
 export HOME=/data/home
+export TZ=Europe/Copenhagen
 
 OPTS=/data/options.json
-AULA_MITID_USERNAME=$(jq -r '.aula_mitid_username' "$OPTS")
-AULA_AUTH_METHOD=$(jq -r '.aula_auth_method' "$OPTS")
-AULA_MITID_PASSWORD=$(jq -r '.aula_mitid_password // empty' "$OPTS")
+export AULA_MITID_USERNAME=$(jq -r '.aula_mitid_username' "$OPTS")
+export AULA_AUTH_METHOD=$(jq -r '.aula_auth_method' "$OPTS")
+export AULA_MITID_PASSWORD=$(jq -r '.aula_mitid_password // empty' "$OPTS")
 HA_NOTIFY_SERVICE=$(jq -r '.ha_notify_service' "$OPTS")
+
+if [ ! -f "$HOME/.config/aula/tokens.json" ]; then
+  echo "No cached MitID token found -- running one-time interactive login."
+  echo "This will print two QR image paths/URLs below once ready; scan them"
+  echo "with the MitID app on your phone (view them from a different device,"
+  echo "e.g. a PC browser, since you can't scan a QR on the same phone)."
+  cd /app && uv run python scripts/mitid_login.py --output text -v login \
+    || echo "MitID login did not complete (see above) -- cron jobs will keep failing until this succeeds. Restart this app to retry."
+fi
 
 cat > /etc/cron.d/instant-aula <<EOF
 SHELL=/bin/bash
@@ -27,9 +37,5 @@ SUPERVISOR_TOKEN=$SUPERVISOR_TOKEN
 EOF
 chmod 0644 /etc/cron.d/instant-aula
 
-echo "instant-aula add-on started."
-echo "One-time step if not done yet: docker exec into this container and run"
-echo "  cd /app && uv run python scripts/mitid_login.py --output text -v login"
-echo "to complete the interactive MitID login (tokens then persist in /data)."
-
+echo "instant-aula: cron schedule installed, starting."
 exec cron -f

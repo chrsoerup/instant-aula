@@ -1,5 +1,5 @@
 name: "Instant Aula"
-version: "1.0.1"
+version: "1.0.2"
 slug: "instant_aula"
 description: "Weekly Aula school digest and urgent alerts, pushed via Home Assistant notifications"
 arch:
@@ -8,6 +8,8 @@ arch:
 startup: services
 boot: auto
 homeassistant_api: true
+map:
+  - homeassistant_config:rw
 options:
   aula_mitid_username: ""
   aula_auth_method: "app"
