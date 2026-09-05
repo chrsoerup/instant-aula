@@ -33,7 +33,14 @@ _HA_WWW = Path("/config/www")
 # MitID needs the QR scanned by your phone, so it can't be viewed on the same
 # device that's scanning it anyway. Falls back to the project root for local/
 # WSL testing, where the original VS Code file-preview workflow still works.
-_QR_DIR = _HA_WWW if _HA_WWW.is_dir() else _PROJECT_ROOT
+# www/ itself may not exist yet on a fresh Home Assistant install -- create
+# it if /config (the mounted volume) is there, rather than silently falling
+# back to a path nothing outside the container can reach.
+if Path("/config").is_dir():
+    _HA_WWW.mkdir(exist_ok=True)
+    _QR_DIR = _HA_WWW
+else:
+    _QR_DIR = _PROJECT_ROOT
 _QR1_PATH = _QR_DIR / "instant_aula_mitid_qr_1.png"
 _QR2_PATH = _QR_DIR / "instant_aula_mitid_qr_2.png"
 
@@ -121,4 +128,5 @@ BrowserClient._poll_for_app_confirmation = _poll_for_app_confirmation_patched
 aula_cli._print_qr_codes_in_terminal = _print_qr_codes_image
 
 if __name__ == "__main__":
+    print(f"[diag] saving QR codes to: {_QR_DIR}")
     sys.exit(aula_cli.cli())
