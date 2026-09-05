@@ -5,12 +5,6 @@ mkdir -p /data/home /data/state
 export HOME=/data/home
 export TZ=Europe/Copenhagen
 
-echo "[diag] container root listing:"
-ls -la / 2>&1 || true
-echo "[diag] /config listing (if present):"
-ls -la /config 2>&1 || true
-echo "[diag] end of mount diagnostics"
-
 OPTS=/data/options.json
 export AULA_MITID_USERNAME=$(jq -r '.aula_mitid_username' "$OPTS")
 export AULA_AUTH_METHOD=$(jq -r '.aula_auth_method' "$OPTS")

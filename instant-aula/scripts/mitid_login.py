@@ -26,17 +26,23 @@ from aula.auth.browser_client import BrowserClient
 from aula.auth.exceptions import MitIDError
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_HA_WWW = Path("/config/www")
-# Inside the Home Assistant add-on, save under HA's own www/ folder so the
-# QR is viewable at http://<ha-host>:8123/local/... from any browser on the
-# LAN (e.g. your PC), without needing shell/file access into the container --
-# MitID needs the QR scanned by your phone, so it can't be viewed on the same
-# device that's scanning it anyway. Falls back to the project root for local/
-# WSL testing, where the original VS Code file-preview workflow still works.
+# The homeassistant_config:rw map in config.yaml mounts HA's config
+# directory at /homeassistant in this container -- NOT /config. The
+# /config -> /homeassistant symlink seen in some official add-ons (ssh,
+# samba) is something those images set up themselves, not something
+# Supervisor provides automatically.
+_HA_CONFIG = Path("/homeassistant")
+_HA_WWW = _HA_CONFIG / "www"
+# Save under HA's own www/ folder so the QR is viewable at
+# http://<ha-host>:8123/local/... from any browser on the LAN (e.g. your
+# PC), without needing shell/file access into the container -- MitID needs
+# the QR scanned by your phone, so it can't be viewed on the same device
+# that's scanning it anyway. Falls back to the project root for local/WSL
+# testing, where the original VS Code file-preview workflow still works.
 # www/ itself may not exist yet on a fresh Home Assistant install -- create
-# it if /config (the mounted volume) is there, rather than silently falling
+# it if the mounted config volume is there, rather than silently falling
 # back to a path nothing outside the container can reach.
-if Path("/config").is_dir():
+if _HA_CONFIG.is_dir():
     _HA_WWW.mkdir(exist_ok=True)
     _QR_DIR = _HA_WWW
 else:
