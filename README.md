@@ -15,7 +15,7 @@ Built on the community-maintained, unofficial [`aula`](https://github.com/nickkn
 
 For real scheduled runs, skip to "Running as a Home Assistant Add-on" below — this section is only for iterating on the Python code itself from a dev shell.
 
-1. **Install [uv](https://docs.astral.sh/uv/)** if you don't have it. `uv` will provision the required Python 3.14 automatically — no manual interpreter install needed.
+1. **Install [uv](https://docs.astral.sh/uv/)** if you don't have it. `uv` will provision the required Python 3.14 automatically — no manual interpreter install needed. The app itself lives in the `instant-aula/` subdirectory (a repository can contain multiple Home Assistant apps, each in its own folder) — `cd instant-aula` before running any of the commands below.
 
 2. **Configure:**
    ```bash
@@ -46,23 +46,27 @@ For real scheduled runs, skip to "Running as a Home Assistant Add-on" below — 
 
 Scheduling and delivery both run inside a local Home Assistant Add-on — a Docker container that Home Assistant's own Supervisor builds and runs directly on the Home Assistant device (e.g. a Home Assistant Green), alongside HA Core itself. That device is always on, so this keeps running through weekends and PC shutdowns — unlike the earlier Windows Scheduled Tasks setup this replaced (see "Known limitations" for why a cloud scheduler wasn't used to solve that instead).
 
-The add-on lives at the repo root: `config.yaml` (add-on manifest + configurable options), `Dockerfile` (builds the image — plain `debian:bookworm-slim`, no browser/Playwright needed since `aula` is a plain HTTP client), and `run.sh` (installs a cron schedule inside the container — Saturdays 08:00 for the digest, every 2 hours for the urgent check — and reads add-on Options into the cron jobs' environment). State (`state/state.json`) and the MitID token cache (normally `~/.config/aula/tokens.json`) are pointed at the add-on's persistent `/data` volume so they survive add-on rebuilds/updates.
+The app lives in the `instant-aula/` subdirectory, alongside a repo-root `repository.yaml` (Home Assistant apps repositories can contain multiple apps, each in its own subdirectory with a `repository.yaml` describing the repo itself): `config.yaml` (app manifest + configurable options), `Dockerfile` (builds the image — plain `debian:bookworm-slim`, no browser/Playwright needed since `aula` is a plain HTTP client), and `run.sh` (installs a cron schedule inside the container — Saturdays 08:00 for the digest, every 2 hours for the urgent check — and reads app Options into the cron jobs' environment). State (`state/state.json`) and the MitID token cache (normally `~/.config/aula/tokens.json`) are pointed at the app's persistent `/data` volume so they survive rebuilds/updates.
 
 Notifications go out via Home Assistant's own Core API (`http://supervisor/core/api/services/notify/<service>`), authenticated with the add-on's auto-injected `SUPERVISOR_TOKEN` — no manually-created long-lived access token needed, thanks to `homeassistant_api: true` in `config.yaml`.
 
+Two Home Assistant terminology/UI changes to know going in: **"Add-ons" was renamed "Apps"** (as of HA 2026.2), and **"Advanced Mode" was removed entirely** (as of HA 2026.6, along with the need for it) — ignore any older instructions that mention either by their old name.
+
 **Setup, in order:**
 
-1. In Home Assistant, click your profile (bottom-left avatar) and enable **Advanced Mode**.
-2. Settings > Add-ons > Add-on Store: install **Samba share** (to copy files onto the device) and **Terminal & SSH** (for the one-time MitID login and troubleshooting).
-3. Via the Samba share (`\\homeassistant\addons` from Windows), copy this repo's contents into `addons\local\instant-aula\`. Via Terminal & SSH, confirm with `ls /addons/local/instant-aula`.
-4. Settings > Add-ons > **Local add-ons** — an "Instant Aula" card should appear. Click it, then **Install**.
+1. Settings > Apps > App Store: install **Terminal & SSH** (for the one-time MitID login and troubleshooting; also usable to transfer files if your network blocks SMB — see note below).
+2. Settings > Apps > (store view) > **⋮ menu > Repositories** > add `https://github.com/chrsoerup/instant-aula`. Supervisor clones it directly — this only works because the repo is public; a private repo can't authenticate through this flow (both the UI and `ha store add` strip any credentials embedded in the URL).
+3. Reload the store (⋮ menu, or `ha store reload` from a terminal) — an "Instant Aula" card should now appear.
+4. Click it, then **Install**. Building the image takes a few minutes the first time (installing `uv`, syncing Python dependencies).
 5. On the **Configuration** tab, fill in `aula_mitid_username`, `aula_auth_method`, and `ha_notify_service` (the paired phone's notify service — find it under Settings > Devices & Services > your phone, or Developer Tools > Actions, search "notify").
-6. **Start** the add-on.
-7. One-time interactive MitID login: via Terminal & SSH, run `docker exec -it addon_local_instant_aula bash`, then inside the container `cd /app && uv run python scripts/mitid_login.py --output text -v login`. Scan **both** QR codes shown, in sequence, with the MitID app. Tokens are then cached under `/data/home/.config/aula/` and survive future add-on restarts/updates.
-8. Check the add-on's **Log** tab for `instant-aula add-on started` with no `jq`/cron errors. To test immediately without waiting for the schedule, `docker exec` in again and run `uv run python -m instant_aula.weekly_digest` (or `.urgent_check`) directly — confirm a push notification arrives and the log shows it sent successfully.
-9. Once confirmed working, disable/delete the old `InstantAulaWeeklyDigest` / `InstantAulaUrgentCheck` Windows Scheduled Tasks (PowerShell: `Unregister-ScheduledTask`, or Task Scheduler GUI) — leaving both active alongside the add-on would double-run and race on `state.json`.
+6. **Start** the app.
+7. One-time interactive MitID login: open the Terminal & SSH app's **web terminal** (Info tab > "Open Web UI" — works even if outbound SMB/SSH ports are firewalled, since it rides over the same HTTPS connection as the dashboard), run `docker exec -it addon_local_instant_aula bash`, then inside the container `cd /app && uv run python scripts/mitid_login.py --output text -v login`. Scan **both** QR codes shown, in sequence, with the MitID app. Tokens are then cached under `/data/home/.config/aula/` and survive future rebuilds/updates.
+8. Check the app's **Log** tab for `instant-aula add-on started` with no `jq`/cron errors. To test immediately without waiting for the schedule, `docker exec` in again and run `uv run python -m instant_aula.weekly_digest` (or `.urgent_check`) directly — confirm a push notification arrives and the log shows it sent successfully.
+9. Once confirmed working, disable/delete the old `InstantAulaWeeklyDigest` / `InstantAulaUrgentCheck` Windows Scheduled Tasks (PowerShell: `Unregister-ScheduledTask`, or Task Scheduler GUI) — leaving both active alongside the app would double-run and race on `state.json`. Note: these tasks run the *current* code directly from this working copy, not a separate deployment — once this repo's code moved to Home Assistant-only delivery, the old tasks stopped being able to notify at all (they need `SUPERVISOR_TOKEN`, which only exists inside the app's container), so there's likely already a gap in coverage between that change and finishing this setup.
 
-**A cloud-hosted scheduler (GitHub Actions) was tried earlier and deliberately reverted**, before this add-on existed. It solved the weekend-off problem — runners are always on regardless of the local machine's state — but routed the MitID session and the kid's school data through whichever datacenter GitHub happened to schedule the runner in (confirmed US-based, not EU, with no way to pin the region on a personal/free plan). That's not an acceptable trade-off for a minor's school data. Running on self-hosted, always-on hardware on the home network (the Home Assistant device) gets the same "always on" property without that trade-off.
+**If SMB (Samba) is blocked on your network** (some corporate-managed laptops block outbound port 445 as policy — check with `Test-NetConnection -ComputerName <device-ip> -Port 445` from PowerShell), skip the Samba app entirely; the repository-based install above never needs it.
+
+**A cloud-hosted scheduler (GitHub Actions) was tried earlier and deliberately reverted**, before this app existed. It solved the weekend-off problem — runners are always on regardless of the local machine's state — but routed the MitID session and the kid's school data through whichever datacenter GitHub happened to schedule the runner in (confirmed US-based, not EU, with no way to pin the region on a personal/free plan). That's not an acceptable trade-off for a minor's school data. Running on self-hosted, always-on hardware on the home network (the Home Assistant device) gets the same "always on" property without that trade-off.
 
 ## How it works
 
