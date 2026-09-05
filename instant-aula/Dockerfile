@@ -1,7 +1,9 @@
 FROM debian:bookworm-slim
 
+ENV TZ=Europe/Copenhagen
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl cron jq \
+        ca-certificates curl cron jq tzdata \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh

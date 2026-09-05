@@ -13,6 +13,7 @@ HA_NOTIFY_SERVICE=$(jq -r '.ha_notify_service' "$OPTS")
 cat > /etc/cron.d/instant-aula <<EOF
 SHELL=/bin/bash
 PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+TZ=Europe/Copenhagen
 HOME=/data/home
 STATE_DIR=/data/state
 AULA_MITID_USERNAME=$AULA_MITID_USERNAME
