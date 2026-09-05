@@ -26,6 +26,15 @@ _PROMPT = """Du er assistent for en forælder til et skolebarn. Herunder er ugen
 
 Find KUN konkrete ting forælderen skal huske at gøre eller medbringe FØR eller PÅ den pågældende dag - fx medbring idrætstøj, medbring læsemappe, lav lektier, medbring bestemte ting til en begivenhed, aflever en tilmelding/underskrift, eller at en forælder selv skal deltage i noget. Ignorer almindelig skemainformation (fag, lokaler, lærernavne, vikartimer) som ikke kræver nogen forberedelse.
 
+Vigtige regler mod at gætte eller sprede en note til flere dage:
+- Behandl hver dato helt isoleret. Når du vurderer om dato X har en highlight, må du KUN bruge "Note:"-linjerne der står under netop dato X -- ikke linjer fra andre datoer, selvom aktiviteterne minder om hinanden eller ligger i forlængelse af hinanden.
+- Hvis en note under dato X nævner en anden dato Y (fx "til brug torsdag" skrevet i onsdagens noter), skal highlighten have "date": Y (den dag det faktisk handler om) -- men opret KUN én highlight for det, ikke også en kopi under X. Dato X får kun sin egen highlight, hvis dato X's EGNE noter selvstændigt nævner noget at huske.
+- Gentag aldrig samme sætning under flere datoer, medmindre nøjagtig den samme sætning bogstaveligt optræder i flere forskellige dages egne noter.
+
+Eksempel: Hvis onsdagens note siger "Vi samler sten i dag til brug på turen torsdag" og torsdagens note siger "HUSK: medbring madpakke torsdag", skal resultatet være:
+{{"highlights": [{{"date": "<torsdagens dato>", "text": "Medbring madpakke til turen"}}]}}
+-- IKKE en tilsvarende madpakke-highlight under onsdag, fordi onsdagens egne noter ikke nævner madpakke.
+
 Svar udelukkende med gyldig JSON på formen: {{"highlights": [{{"date": "YYYY-MM-DD", "text": "kort saetning"}}]}}. Hvis intet relevant findes, returner {{"highlights": []}}. Skriv ikke andet end JSON'en.
 
 Ugens data:
