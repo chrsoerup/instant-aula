@@ -85,8 +85,8 @@ def _print_qr_codes_image(qr1, qr2) -> None:
     print("SCAN THESE QR CODES WITH YOUR MITID APP")
     if _QR_DIR == _HA_WWW:
         print("Open these on a computer/browser (not the phone doing the scanning):")
-        print("  QR CODE 1 (scan first):  http://homeassistant.local:8123/local/instant_aula_mitid_qr_1.png")
-        print("  QR CODE 2 (scan second): http://homeassistant.local:8123/local/instant_aula_mitid_qr_2.png")
+        print("  QR CODE 1 (scan first):  http://homeassistant.local/local/instant_aula_mitid_qr_1.png")
+        print("  QR CODE 2 (scan second): http://homeassistant.local/local/instant_aula_mitid_qr_2.png")
     else:
         print(f"QR CODE 1 (scan this first):  {_QR1_PATH}")
         print(f"QR CODE 2 (scan this second): {_QR2_PATH}")
@@ -99,9 +99,20 @@ def _print_qr_codes_image(qr1, qr2) -> None:
 # state (observed right after the user approves in the app) that the
 # library's state machine doesn't recognize -- it only checks for
 # status == "OK" AND confirmation is True, and treats anything else
-# matching "OK" as a fatal "Unexpected poll status". Tolerate a bounded
-# number of these before giving up, instead of failing immediately.
-_original_poll = BrowserClient._poll_for_app_confirmation
+# matching "OK" as a fatal "Unexpected poll status".
+#
+# The first version of this patch only intercepted the *first* poll call and
+# delegated every subsequent one to the original method once it saw any
+# other (normal, in-progress) status. That's broken: the original method has
+# its own internal polling loop with no knowledge of our workaround, so once
+# delegated to, it hits the exact same "OK without confirmation" gap on a
+# later poll -- observed in practice as a crash right after actually
+# approving the login in the app. Fix: never delegate: reimplement the full
+# state machine here (mirroring aula.auth.browser_client.BrowserClient.
+# _poll_for_app_confirmation) so our tolerance applies to every poll, not
+# just the first.
+_POLL_SECONDS = 0.5
+_QR_POLL_SECONDS = 1.0
 
 
 async def _poll_for_app_confirmation_patched(self, poll_url: str, ticket: str):
@@ -113,10 +124,13 @@ async def _poll_for_app_confirmation_patched(self, poll_url: str, ticket: str):
         if not r.is_success:
             raise MitIDError("Login request was not accepted")
 
-        if data.get("status") == "OK" and data.get("confirmation") is True:
+        status = data["status"]
+
+        if status == "OK" and data.get("confirmation") is True:
+            self._end_qr_phase()
             return data["payload"]["response"], data["payload"]["responseSignature"]
 
-        if data.get("status") == "OK":
+        if status == "OK":
             ok_without_confirmation += 1
             print(
                 f"[diag] status=OK without confirmation yet (attempt {ok_without_confirmation}/20), retrying..."
@@ -126,7 +140,34 @@ async def _poll_for_app_confirmation_patched(self, poll_url: str, ticket: str):
             await asyncio.sleep(0.5)
             continue
 
-        return await _original_poll(self, poll_url, ticket)
+        if status == "timeout":
+            await asyncio.sleep(_POLL_SECONDS)
+            continue
+
+        if status == "channel_validation_otp":
+            otp_code = data["channelBindingValue"]
+            self.status_message = f"Please use the following OTP code in the app: {otp_code}"
+            if otp_code != self.otp_code:
+                self.otp_code = otp_code
+                if self._on_otp_code:
+                    self._on_otp_code(otp_code)
+            await asyncio.sleep(_POLL_SECONDS)
+            continue
+
+        if status == "channel_validation_tqr":
+            self._handle_qr_code_poll(data)
+            await asyncio.sleep(_QR_POLL_SECONDS)
+            continue
+
+        if status == "channel_verified":
+            self._end_qr_phase()
+            self.status_message = (
+                "The OTP/QR code has been verified, now waiting user to approve login"
+            )
+            await asyncio.sleep(_POLL_SECONDS)
+            continue
+
+        raise MitIDError(f"Unexpected poll status: {status}")
 
 
 BrowserClient._poll_for_app_confirmation = _poll_for_app_confirmation_patched
