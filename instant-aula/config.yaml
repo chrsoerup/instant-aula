@@ -1,5 +1,5 @@
 name: "Instant Aula"
-version: "1.0.8"
+version: "1.0.9"
 slug: "instant_aula"
 description: "Weekly Aula school digest and urgent alerts, pushed via Home Assistant notifications"
 arch:

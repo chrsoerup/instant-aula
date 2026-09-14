@@ -128,19 +128,27 @@ def _render_plain_text(dates: list[str], events: dict[str, list[str]], notes: di
     return "\n".join(lines).strip() or "Ingen planlagte aktiviteter fundet for denne uge."
 
 
-def _next_iso_week() -> str:
-    """ISO week for 7 days from now -- lands in "next week" regardless of
-    which day of the current week this runs on (e.g. run on a Saturday to
-    get a look-ahead digest for the upcoming Mon-Sun week)."""
-    target = datetime.date.today() + datetime.timedelta(days=7)
-    iso_year, iso_week, _ = target.isocalendar()
+def _current_iso_week() -> str:
+    """ISO week containing today.
+
+    This used to ask for *next* week, so a Saturday run doubled as a weekend
+    look-ahead. In practice that reliably produced a timetable with no notes:
+    Aula publishes the calendar a week ahead, but teachers write their Meebook
+    weekplans for the week they are in -- often referring forward from it
+    ("vi fortsætter i næste uge med...") rather than filling the next week out.
+    Measured on 2026-09-14: current week 7 tasks, next week 0.
+
+    Paired with the Monday 06:00 cron slot in run.sh, this delivers the week
+    you are entering, with notes, before school starts.
+    """
+    iso_year, iso_week, _ = datetime.date.today().isocalendar()
     return f"{iso_year}-W{iso_week}"
 
 
 def main() -> int:
     settings = load_settings()
 
-    week = _next_iso_week()
+    week = _current_iso_week()
     summary = run_aula(settings, "weekly-summary", "--provider", "meebook", "--week", week)
     year = int(summary.get("week", "").split("-W")[0] or datetime.date.today().year)
 

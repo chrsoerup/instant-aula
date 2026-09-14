@@ -107,7 +107,7 @@ AULA_MITID_PASSWORD=$AULA_MITID_PASSWORD
 HA_NOTIFY_SERVICE=$HA_NOTIFY_SERVICE
 SUPERVISOR_TOKEN=${SUPERVISOR_TOKEN:-}
 
-0 8 * * 6 root cd /app && uv run python -m instant_aula.weekly_digest >> /proc/1/fd/1 2>> /proc/1/fd/2
+0 6 * * 1 root cd /app && uv run python -m instant_aula.weekly_digest >> /proc/1/fd/1 2>> /proc/1/fd/2
 0 */2 * * * root cd /app && uv run python -m instant_aula.urgent_check >> /proc/1/fd/1 2>> /proc/1/fd/2
 EOF
 chmod 0644 /etc/cron.d/instant-aula
