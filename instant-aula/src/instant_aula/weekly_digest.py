@@ -71,6 +71,49 @@ def _split_note_lines(content: str) -> list[str]:
     return lines
 
 
+def _teacher_label(event: dict) -> str:
+    """Teacher for one event, with the substitute noted where there is one."""
+    teacher = event.get("teacher_name") or ""
+    if event.get("has_substitute") and event.get("substitute_name"):
+        substitute = f"vikar: {event['substitute_name']}"
+        return f"{teacher} -- {substitute}" if teacher else substitute
+    return teacher
+
+
+def _render_slot(start, end, events: list[dict]) -> str:
+    """One timetable line per time slot, however many staff Aula lists for it.
+
+    Aula returns one event per *staff assignment*, not per lesson: a Danish
+    lesson with a resource teacher present comes back as two events with
+    different ids on the same slot (DAN/Mette + RES/Katrine), and a PE lesson
+    with two teachers as two IDR events. Printed one per line that was 40 lines
+    to describe 26 periods, and it read as though Monday 09.50 held two separate
+    lessons. Measured on week 2026-W38: 12 of 26 slots carried more than one
+    event, and all 11 RES events shadowed another lesson.
+
+    Same-titled events collapse into one entry with the teachers listed
+    together; different titles are joined with "+" so a supported lesson still
+    shows both roles.
+    """
+    by_title: dict[str, list[str]] = {}
+    locations: list[str] = []
+    for event in events:
+        title = event.get("title") or "?"
+        teacher = _teacher_label(event)
+        labels = by_title.setdefault(title, [])
+        if teacher and teacher not in labels:
+            labels.append(teacher)
+        location = event.get("location")
+        if location and location not in locations:
+            locations.append(location)
+
+    parts = [f"{title} ({', '.join(labels)})" if labels else title for title, labels in by_title.items()]
+    line = f"Kl. {start:%H.%M}-{end:%H.%M}: " + " + ".join(parts)
+    if locations:
+        line += f" [{', '.join(locations)}]"
+    return line
+
+
 def _group_events(events: list[dict]) -> dict[str, list[str]]:
     parsed = []
     for event in events:
@@ -81,16 +124,13 @@ def _group_events(events: list[dict]) -> dict[str, list[str]]:
             continue
         parsed.append((start, end, event))
 
+    slots: dict[tuple, list[dict]] = {}
+    for start, end, event in sorted(parsed, key=lambda p: (p[0], p[1])):
+        slots.setdefault((start, end), []).append(event)
+
     grouped: dict[str, list[str]] = defaultdict(list)
-    for start, end, event in sorted(parsed, key=lambda p: p[0]):
-        line = f"Kl. {start:%H.%M}-{end:%H.%M}: {event.get('title') or '?'}"
-        if event.get("teacher_name"):
-            line += f" ({event['teacher_name']})"
-        if event.get("has_substitute") and event.get("substitute_name"):
-            line += f" -- vikar: {event['substitute_name']}"
-        if event.get("location"):
-            line += f" [{event['location']}]"
-        grouped[start.date().isoformat()].append(line)
+    for (start, end), slot_events in slots.items():
+        grouped[start.date().isoformat()].append(_render_slot(start, end, slot_events))
     return grouped
 
 
