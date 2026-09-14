@@ -1,4 +1,22 @@
-"""Optional local-LLM pass that pulls the parent-actionable reminders
+"""NOT CURRENTLY WIRED IN -- weekly_digest.py no longer calls this.
+
+Benchmarked against one real week of notes on 2026-09-14, llama3.1:8b run
+twice on identical input: run 1 returned 5 reminders and silently dropped
+the week's maths homework ("Side 10-11 i bogen skal laves"); run 2
+returned 8 including "Medbring madpakke til trivsel og leg", a phrase
+that appears nowhere in the week's data -- it was lifted from the worked
+example in _PROMPT below. Both failure modes are invisible to a reader
+who only sees the summary. Home Assistant Green (4 GB, quad A55) cannot
+run an 8B model anyway, so anything running there would be weaker still.
+
+Kept for reference rather than deleted: the approach may be worth
+revisiting with a stronger model, a prompt whose example uses data that
+cannot be mistaken for input, and the full notes kept visible alongside
+so a miss stays recoverable.
+
+Original docstring follows.
+
+Optional local-LLM pass that pulls the parent-actionable reminders
 (bring gym clothes, homework due, bring the 'læsemappe', permission slip
 needed, etc.) out of the week's structured schedule/notes, via a locally
 running Ollama model.
