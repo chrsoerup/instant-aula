@@ -91,6 +91,40 @@ Two Home Assistant terminology/UI changes to know going in: **"Add-ons" was rena
 
 **A cloud-hosted scheduler (GitHub Actions) was tried earlier and deliberately reverted**, before this app existed. It solved the weekend-off problem — runners are always on regardless of the local machine's state — but routed the MitID session and the kid's school data through whichever datacenter GitHub happened to schedule the runner in (confirmed US-based, not EU, with no way to pin the region on a personal/free plan). That's not an acceptable trade-off for a minor's school data. Running on self-hosted, always-on hardware on the home network (the Home Assistant device) gets the same "always on" property without that trade-off.
 
+## Refreshing the MitID token
+
+The add-on runs off a cached MitID session at `/data/home/.config/aula/tokens.json`, refreshed automatically as long as it's used regularly. When the refresh token itself eventually expires, every job starts failing and you'll get a `[Aula] weekly_digest failed` (or `urgent_check`) push with the traceback.
+
+**Don't try to log in inside the container.** That needs a shell, which needs Protection mode off on the Terminal & SSH app, which recent Home Assistant no longer lets you disable (see step 7b). Log in where scanning a QR is easy — your PC — and hand the app the result.
+
+1. **Log in locally** (in `instant-aula/`, see local dev setup for first-time prerequisites):
+   ```bash
+   uv run python scripts/mitid_login.py --output text -v login
+   ```
+   It prints the path to `instant_aula_mitid.html`. Open that in a browser and scan **both** QR codes on the page with the MitID app. Don't reload the page and don't scan from a saved copy of the image — MitID rotates the value behind the codes about once a second, and both halves have to come from the same rotation.
+
+   `Logged in. API URL: ...` means it worked, and `~/.config/aula/tokens.json` now holds a fresh session. If it prints that *without* showing you a QR, the existing local token was still valid and simply got refreshed — that counts.
+
+2. **Copy it to your clipboard.** Note the absence of `-w0`: the HA web terminal silently truncates any pasted line over 4 KB, and the file base64s to ~5.3 KB on one line.
+   ```bash
+   base64 ~/.config/aula/tokens.json | clip.exe
+   ```
+
+3. **Paste it into HA's config directory** — Terminal & SSH app > Open Web UI. Paste, then Enter, then Ctrl+D:
+   ```bash
+   cat > /config/instant_aula_tokens.b64
+   tr -d '\r' < /config/instant_aula_tokens.b64 | base64 -d > /config/instant_aula_tokens.json
+   rm /config/instant_aula_tokens.b64
+   wc -c /config/instant_aula_tokens.json    # sanity check: a few KB, not 0
+   ```
+   Use `/config`, **not** `/config/www` — anything under `www/` is served to the network, and this file is a live Aula session credential.
+
+4. **Restart the app.** On start, `run.sh` installs the file to `/data/home/.config/aula/tokens.json` (mode 600) and deletes the staged copy, logging `Imported MitID tokens from ...`. Deleting it is deliberate: it keeps a credential out of HA's backed-up config directory, and makes the import once-only so a later restart can't resurrect a stale token over a newer one.
+
+5. **Confirm** by setting `run_now` to `urgent` (or `digest`), saving, and restarting — then set it back to `none`.
+
+Leave `run_mitid_login` at `false` throughout. It only matters if you have a container shell, and MitID rate-limits repeated attempts: enough failures and the account is blocked, needing mitid.dk self-service or MitID support to unblock.
+
 ## How it works
 
 - `aula_cli.py` shells out to the `aula` CLI with `--output json` rather than importing its internals directly, since those are explicitly called out as subject to change.
