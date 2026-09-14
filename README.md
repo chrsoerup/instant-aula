@@ -60,7 +60,9 @@ Two Home Assistant terminology/UI changes to know going in: **"Add-ons" was rena
 2. Settings > Apps > (store view) > **⋮ menu > Repositories** > add `https://github.com/chrsoerup/instant-aula`. Supervisor clones it directly — this only works because the repo is public; a private repo can't authenticate through this flow (both the UI and `ha store add` strip any credentials embedded in the URL).
 3. Reload the store (⋮ menu, or `ha store reload` from a terminal) — an "Instant Aula" card should now appear.
 4. Click it, then **Install**. Building the image takes a few minutes the first time (installing `uv`, syncing Python dependencies).
-5. On the **Configuration** tab, fill in `aula_mitid_username`, `aula_auth_method`, and `ha_notify_service` (the paired phone's notify service — find it under Settings > Devices & Services > your phone, or Developer Tools > Actions, search "notify").
+5. On the **Configuration** tab, fill in `aula_mitid_username`, `aula_auth_method`, and `ha_notify_service`. The last one is the notify service name **without** the `notify.` prefix — find it under Developer Tools > Actions, search "notify"; the paired phone's looks like `mobile_app_<phone>`. A leading `notify.` is stripped if you paste it anyway.
+
+   It accepts a comma-separated list, and `mobile_app_<phone>,persistent_notification` is the recommended value. The phone push is the only thing that reaches you away from home, but iOS shows a 3500-character digest as a two-line preview and the Companion app has no inbox to open it in; `persistent_notification` puts the same text in Home Assistant's own Notifications panel, where it renders in full and stays until dismissed. Delivery is attempted per target, so a typo in one costs a log line rather than the message.
 6. **Start** the app.
 7. **Get a MitID token into the app.** Two ways, and the first is strongly preferred:
 
@@ -116,7 +118,7 @@ Hardware compounds it: the digest runs on a Home Assistant Green (4 GB RAM, quad
 A rules-based extractor (match `husk`/`medbring`/`aflever`/`skal laves`, quote the teacher verbatim) was also prototyped and found every real item, missing only paraphrases like "giv **gerne** besked". If a short list is wanted later, that's the safer basis — it can only quote, never invent. For now the digest sends the notes in full.
 - `urgent_check.py` calls `aula messages --unread` and `aula posts`; every new unread message is forwarded as-is, and posts are alerted only when Aula's own `is_important` flag is set. Post attachment counts are noted in the push notification text (not downloaded — a notification can't carry file contents; check Aula directly for the file).
 - Both scripts are safe to re-run: `state/state.json` ensures items are never re-alerted once seen.
-- `ha_notify.py`: pushes notifications via Home Assistant's Core API, using the add-on's auto-injected `SUPERVISOR_TOKEN`. This is the sole delivery channel (no email fallback) — see "Running as a Home Assistant Add-on" above.
+- `ha_notify.py`: pushes notifications via Home Assistant's Core API, using the add-on's auto-injected `SUPERVISOR_TOKEN`. This is the sole delivery channel (no email fallback) — see "Running as a Home Assistant Add-on" above. It delivers to every service named in `ha_notify_service` (comma-separated), failing only when *all* of them fail, so the phone push surviving is enough for the digest to count as sent.
 - `notify_failure.py`: if either script crashes for any reason (including MitID auth expiring), it pushes a `[Aula] <job> failed` notice with the traceback via the same Home Assistant path — so a broken scheduled run surfaces immediately instead of "I haven't gotten a digest in three weeks." If Home Assistant itself is unreachable, this has nowhere left to go; check the add-on's Log tab in that case.
 
 ## Known limitations
