@@ -11,10 +11,13 @@ timestamps vs. Danish day labels like "mandag 17. aug.") in one big pass
 is instant, never drops content, and preserves the teacher's exact
 original wording.
 
-A separate, optional pass (see highlights.py) *does* use a local Ollama
-model, to pull out the handful of parent-actionable reminders (bring gym
-clothes, bring the "læsemappe", homework due, etc.) buried in that same
-text -- a genuine judgment call, unlike the deterministic grouping above.
+There was an optional Ollama pass (highlights.py) that prepended a "Husk"
+list of parent-actionable reminders. It is no longer wired in: measured
+against one real week on 2026-09-14, llama3.1:8b dropped the week's maths
+homework on one run and on the next invented a "medbring madpakke" errand
+lifted straight from its own prompt's worked example. A summary whose
+misses and inventions are both invisible is worse than no summary. See
+highlights.py if reviving it.
 """
 
 from __future__ import annotations
@@ -27,7 +30,6 @@ from collections import defaultdict
 from .aula_cli import run_aula
 from .config import load_settings
 from .ha_notify import notify
-from .highlights import extract_highlights
 from .notify_failure import notify_failure
 
 _WEEKDAYS_DA = ("Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag")
@@ -92,38 +94,61 @@ def _group_events(events: list[dict]) -> dict[str, list[str]]:
     return grouped
 
 
-def _group_notes(students: list[dict], year: int) -> dict[str, list[str]]:
-    grouped: dict[str, list[str]] = defaultdict(list)
+def _group_notes(students: list[dict], year: int) -> dict[str, dict[str, list[str]]]:
+    """Group notes by date, then by subject.
+
+    Returns {date: {heading: [line, ...]}}. The subject ("pill") becomes a
+    heading rendered once per group rather than a "[Dansk] " prefix repeated on
+    every single line -- a week's notes are mostly one or two subjects per day,
+    so the prefix was pure repetition.
+
+    The heading carries the child's name only when more than one child has notes
+    that week: with one child it is noise, with two, merging their subjects into
+    a shared "Dansk" heading would silently attribute one child's homework to
+    the other.
+    """
+    with_notes = {
+        student.get("name")
+        for student in students
+        for day in student.get("week_plan", [])
+        if day.get("tasks")
+    }
+    name_headings = len(with_notes) > 1
+
+    grouped: dict[str, dict[str, list[str]]] = defaultdict(dict)
     for student in students:
+        first_name = (student.get("name") or "").split(" ")[0]
         for day in student.get("week_plan", []):
             date = _parse_meebook_date(day.get("date", ""), year)
             if date is None:
                 continue
             for task in day.get("tasks", []):
-                pill = task.get("pill")
-                prefix = f"[{pill}] " if pill else ""
-                grouped[date].extend(prefix + line for line in _split_note_lines(task.get("content")))
+                lines = _split_note_lines(task.get("content"))
+                if not lines:
+                    continue
+                heading = (task.get("pill") or "Noter").strip()
+                if name_headings and first_name:
+                    heading = f"{first_name} - {heading}"
+                grouped[date].setdefault(heading, []).extend(lines)
     return grouped
 
 
-def _render_highlights_plain(highlights: list[tuple[str, str]] | None) -> str:
-    if not highlights:
-        return ""
-    lines = ["Husk:"]
-    lines.extend(f"- {_weekday_da(date)}: {text}" for date, text in sorted(highlights))
-    return "\n".join(lines) + "\n\n"
+def _note_item_count(notes: dict[str, dict[str, list[str]]]) -> int:
+    return sum(len(lines) for groups in notes.values() for lines in groups.values())
 
 
-def _render_plain_text(dates: list[str], events: dict[str, list[str]], notes: dict[str, list[str]]) -> str:
+def _render_plain_text(
+    dates: list[str], events: dict[str, list[str]], notes: dict[str, dict[str, list[str]]]
+) -> str:
     lines = []
     for date in dates:
         lines.append(_weekday_da(date) + ":")
         if events.get(date):
             lines.append("  Skema:")
             lines.extend(f"  - {item}" for item in events[date])
-        if notes.get(date):
-            lines.append("  Noter/lektier:")
-            lines.extend(f"  - {item}" for item in notes[date])
+        for heading, items in notes.get(date, {}).items():
+            lines.append(f"  {heading}:")
+            lines.extend(f"  - {item}" for item in items)
         lines.append("")
     return "\n".join(lines).strip() or "Ingen planlagte aktiviteter fundet for denne uge."
 
@@ -160,7 +185,6 @@ def main() -> int:
     events = _group_events(summary.get("calendar_events", []))
     notes = _group_notes(summary.get("meebook_weekplan", []), year)
     dates = sorted(set(events) | set(notes))
-    highlights = extract_highlights(settings, dates, events, notes)
 
     # Diagnostic trail for the "notes came back empty" issue seen once so
     # far -- pins down whether a recurrence is missing data from Aula's own
@@ -168,14 +192,13 @@ def main() -> int:
     print(
         f"Fetched week {summary.get('week')}: requested={week}, "
         f"raw_meebook_tasks={raw_task_count}, days_with_events={len(events)}, "
-        f"days_with_notes={len(notes)}, total_note_items={sum(len(v) for v in notes.values())}, "
-        f"highlights={len(highlights) if highlights else 0}"
+        f"days_with_notes={len(notes)}, total_note_items={_note_item_count(notes)}"
     )
 
     notify(
         settings,
         title=f"Aula ugebrev - uge {summary.get('week', '')}",
-        message=_render_highlights_plain(highlights) + _render_plain_text(dates, events, notes),
+        message=_render_plain_text(dates, events, notes),
     )
     print("Weekly digest sent.")
     return 0

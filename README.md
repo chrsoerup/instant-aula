@@ -5,7 +5,7 @@ Turns Aula's flood of notifications into two things:
 - **A weekly digest** — one push notification, once a week, with the school week (Meebook weekplan + calendar) as a day-by-day plain-text summary.
 - **Must-read alerts** — new messages and school-flagged important posts are pushed as soon as they show up; everything else (routine notifications, un-flagged posts) is left alone.
 
-Both are mostly deterministic Python — the source data (Meebook's weekplan text, Aula's own `is_important` flag on posts, and the fact that messages are personally addressed by a teacher rather than broadcast) already carries most of the signal needed, with no summarization required for grouping/formatting. The one exception: the weekly digest also runs the week's notes through a local Ollama model to surface a short "Husk" (remember) list of parent-actionable items — bring gym clothes, bring the "læsemappe", a permission slip due, etc. — a genuine judgment call rather than a formatting job. See `highlights.py`. It's optional and fails soft: if Ollama isn't running, the digest still sends, just without that section.
+Both are mostly deterministic Python — the source data (Meebook's weekplan text, Aula's own `is_important` flag on posts, and the fact that messages are personally addressed by a teacher rather than broadcast) already carries most of the signal needed, with no summarization required for grouping/formatting. No LLM is involved: the digest is the teachers' own wording, grouped by day and subject. An Ollama pass that prepended a "Husk" (remember) list was tried and removed — see "Why there's no LLM summary" below.
 
 Delivery is via Home Assistant push notifications (Companion app), running as a local Home Assistant Add-on on an always-on device — see "Running as a Home Assistant Add-on" below.
 
@@ -92,11 +92,28 @@ Two Home Assistant terminology/UI changes to know going in: **"Add-ons" was rena
 ## How it works
 
 - `aula_cli.py` shells out to the `aula` CLI with `--output json` rather than importing its internals directly, since those are explicitly called out as subject to change.
-- `weekly_digest.py` calls `aula weekly-summary --provider meebook`, groups calendar events and Meebook weekplan notes by date in Python (parsing both the ISO calendar timestamps and Meebook's Danish day labels like "mandag 17. aug."), splits weekplan text on the teacher's own `___` section breaks into bullets, and renders a plain-text summary — without touching an LLM, so the teacher's original wording is preserved exactly. It then separately calls `highlights.py`, which sends that same grouped data to a local Ollama model (`llama3.1:8b` by default) asking it to pick out only concrete parent action items, and prepends the result as a "Husk" section.
+- `weekly_digest.py` calls `aula weekly-summary --provider meebook`, groups calendar events and Meebook weekplan notes by date in Python (parsing both the ISO calendar timestamps and Meebook's Danish day labels like "mandag 17. aug."), splits weekplan text on the teacher's own `___` section breaks into bullets, and renders a plain-text summary — without touching an LLM, so the teacher's original wording is preserved exactly. Notes are grouped by day and then by subject, so the subject appears once as a heading (`Dansk:`) rather than as a `[Dansk]` prefix on every line. The child's name joins that heading only when more than one child has notes that week — with one child it's noise, with two, merging both into a shared `Dansk:` heading would attribute one child's homework to the other.
 
   It fetches the **current** week, and runs Monday 06:00 for that reason. Fetching next week instead (which a weekend look-ahead would need) reliably returns a timetable with no notes: Aula publishes the calendar a week ahead, but teachers fill in their Meebook weekplan for the week they're in, often referring forward from it ("vi fortsætter i næste uge med…") rather than writing the next week out. Measured 2026-09-14: current week 7 tasks, next week 0, with 40 calendar events either way.
 
-  Note also that `highlights.py` needs Ollama reachable from wherever the digest runs. Inside the Home Assistant app there is no Ollama, so the "Husk" section is silently skipped there — the log says `Skipping reminder highlights, Ollama call failed` and the digest sends without it.
+### Why there's no LLM summary
+
+`highlights.py` asked a local Ollama model to reduce the week's notes to a short "Husk" list of parent-actionable items. It's still in the tree but no longer called, because it was measured rather than assumed.
+
+Benchmarked on one real week (2026-09-14), `llama3.1:8b` run twice on identical input:
+
+| | run 1 (146s) | run 2 (94s) |
+|---|---|---|
+| items returned | 5 | 8 |
+| `HUSK LÆSEMAPPE!!` | ✓ | ✓ |
+| maths homework (`Side 10-11 i bogen skal laves`) | **missed** | ✓ |
+| `Medbring madpakke til trivsel og leg` | — | **invented** |
+
+The madpakke errand appears nowhere in that week's data; the model lifted it from the worked example inside its own prompt. So one run silently dropped real homework and the other manufactured an errand — and if the digest is reduced to that list, both failures are invisible to the reader.
+
+Hardware compounds it: the digest runs on a Home Assistant Green (4 GB RAM, quad-core A55), which cannot load an 8B model at all. Anything that fits there is weaker than the model that produced the table above.
+
+A rules-based extractor (match `husk`/`medbring`/`aflever`/`skal laves`, quote the teacher verbatim) was also prototyped and found every real item, missing only paraphrases like "giv **gerne** besked". If a short list is wanted later, that's the safer basis — it can only quote, never invent. For now the digest sends the notes in full.
 - `urgent_check.py` calls `aula messages --unread` and `aula posts`; every new unread message is forwarded as-is, and posts are alerted only when Aula's own `is_important` flag is set. Post attachment counts are noted in the push notification text (not downloaded — a notification can't carry file contents; check Aula directly for the file).
 - Both scripts are safe to re-run: `state/state.json` ensures items are never re-alerted once seen.
 - `ha_notify.py`: pushes notifications via Home Assistant's Core API, using the add-on's auto-injected `SUPERVISOR_TOKEN`. This is the sole delivery channel (no email fallback) — see "Running as a Home Assistant Add-on" above.
@@ -107,6 +124,6 @@ Two Home Assistant terminology/UI changes to know going in: **"Add-ons" was rena
 - **Single delivery channel by design**: if Home Assistant is down or unreachable, both the digest/alerts and the failure notice about a crash have nowhere to go — visible only in the add-on's own Log tab. This was an explicit trade-off in exchange for not maintaining a second (email) channel.
 - MitID auth is interactive on first login and whenever the refresh token expires — this can't be made fully unattended, and requires `docker exec`-ing into the add-on's container to redo (see step 7 above).
 - This relies on an unofficial, reverse-engineered API; if Aula changes its backend, `aula` CLI commands may break until the upstream project catches up.
-- Un-flagged posts and notifications (photo uploads, presence changes, etc.) are never surfaced, even if genuinely important — there's no LLM safety net for content the school forgot to mark important. If that turns out to be a real gap in practice, an LLM-based fallback (Ollama is already installed) could be reintroduced for that narrower case.
+- Un-flagged posts and notifications (photo uploads, presence changes, etc.) are never surfaced, even if genuinely important — there's no LLM safety net for content the school forgot to mark important.
 - The MitID app-login QR flow requires scanning **both** QR codes (they encode two halves of one verification value, which MitID rotates about once a second) — easy to miss, and the failure mode if you only scan one, or scan two halves from different rotations, isn't an obvious error message. Both codes are therefore rendered into a single self-refreshing page; scanning from a stale or manually saved copy of the image will not work.
 - MitID rate-limits and eventually blocks an account after repeated failed or abandoned login attempts, so a broken login loop is expensive to debug. Prefer getting a successful login on a dev machine and copying `tokens.json` in (see step 4 of local setup). An account that ends up blocked has to be unblocked via mitid.dk self-service or MitID support.
