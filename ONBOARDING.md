@@ -60,5 +60,5 @@ Note: since the Home Assistant migration isn't live yet (see "Current status" ab
 1. Both jobs push a `[Aula] <job> failed` notice with a full traceback on crash via Home Assistant — check that first, it's usually enough.
 2. Logs: the add-on's **Log** tab in Home Assistant (Settings > Apps > Instant Aula).
 3. If it's an auth failure specifically (the MitID refresh token expired): log in on a PC and copy the resulting `tokens.json` into HA's config directory as `instant_aula_tokens.json`, then restart the app — it imports the file on start. Full steps in README.md, "Refreshing the MitID token". There is no shell into the add-on container, so don't go looking for one.
-4. To run a job on demand rather than waiting for cron: set the `run_now` option (`urgent`/`digest`/`both`), save, restart, then set it back to `none`.
+4. To run a job on demand rather than waiting for the schedule: set the `run_now` option (`urgent`/`digest`/`both`), save, restart, then set it back to `none`.
 5. Add-on state: Settings > Apps > Instant Aula — Start/Stop/Restart and Configuration are all there.

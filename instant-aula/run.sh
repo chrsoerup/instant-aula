@@ -13,12 +13,12 @@ HA_NOTIFY_SERVICE=$(jq -r '.ha_notify_service' "$OPTS")
 RUN_MITID_LOGIN=$(jq -r '.run_mitid_login' "$OPTS")
 RUN_NOW=$(jq -r '.run_now // "none"' "$OPTS")
 
-# Exported, not just written into the cron file below: the run_now block runs
-# these same modules directly from this script, and they need the identical
-# environment the cron jobs get. STATE_DIR especially -- without it the state
-# file defaults to /app/state/, so a run here would baseline itself somewhere
-# the scheduled runs never look, and the next cron run would re-alert the whole
-# backlog.
+# Exported rather than plain shell variables: both the run_now block and the
+# scheduler loop below start these modules as child processes of this script,
+# so the environment they see is this one. STATE_DIR especially -- without it
+# the state file defaults to /app/state/, so a run would baseline itself
+# somewhere the next run never looks, and that next run would re-alert the
+# whole backlog.
 export HA_NOTIFY_SERVICE
 export STATE_DIR=/data/state
 
@@ -64,23 +64,25 @@ fi
 # One-shot manual trigger. Without a shell in this container (getting one needs
 # Protection mode off on the Terminal & SSH app, which Home Assistant no longer
 # exposes a toggle for), this is the only way to run a job on demand rather than
-# waiting up to two hours for the next cron tick.
+# waiting up to two hours for the next scheduled tick.
 #
 # Each run is wrapped so a failure only logs -- set -euo pipefail would
 # otherwise take the whole container down over one bad run and leave nothing
-# scheduled. Subshells keep the cd out of the rest of this script.
-_run_now() {
-  echo "run_now: starting $1"
-  ( cd /app && uv run python -m "instant_aula.$1" ) \
-    && echo "run_now: $1 finished" \
-    || echo "run_now: $1 FAILED (traceback above)"
+# scheduled. Subshells keep the cd out of the rest of this script. The $1 label
+# distinguishes manual runs from scheduled ones in the log.
+_run_job() {
+  local label=$1 module=$2
+  echo "$label: starting $module"
+  ( cd /app && uv run python -m "instant_aula.$module" ) \
+    && echo "$label: $module finished" \
+    || echo "$label: $module FAILED (traceback above)"
 }
 
 case "$RUN_NOW" in
   none) ;;
-  urgent) _run_now urgent_check ;;
-  digest) _run_now weekly_digest ;;
-  both)   _run_now urgent_check; _run_now weekly_digest ;;
+  urgent) _run_job run_now urgent_check ;;
+  digest) _run_job run_now weekly_digest ;;
+  both)   _run_job run_now urgent_check; _run_job run_now weekly_digest ;;
   *)      echo "run_now: unrecognised value '$RUN_NOW' -- skipping." ;;
 esac
 
@@ -95,22 +97,67 @@ if [ -z "${SUPERVISOR_TOKEN:-}" ]; then
   echo "WARNING: SUPERVISOR_TOKEN is not set -- scheduled runs will fail to send notifications."
 fi
 
-cat > /etc/cron.d/instant-aula <<EOF
-SHELL=/bin/bash
-PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
-TZ=Europe/Copenhagen
-HOME=/data/home
-STATE_DIR=/data/state
-AULA_MITID_USERNAME=$AULA_MITID_USERNAME
-AULA_AUTH_METHOD=$AULA_AUTH_METHOD
-AULA_MITID_PASSWORD=$AULA_MITID_PASSWORD
-HA_NOTIFY_SERVICE=$HA_NOTIFY_SERVICE
-SUPERVISOR_TOKEN=${SUPERVISOR_TOKEN:-}
+# Scheduling, in this script rather than via cron.
+#
+# cron was used up to and including 1.0.12 and never fired a single job. It
+# accepted /etc/cron.d/instant-aula without complaint and logged nothing, but
+# across two weeks of confirmed container uptime the app log contained no
+# output at all from urgent_check -- which prints "No new must-read items." on
+# every run, unconditionally, every two hours. Every digest that ever arrived
+# came from the run_now path above, never from the schedule.
+#
+# Rather than keep guessing which of cron-in-a-slim-container's quiet failure
+# modes it was, the schedule lives here now. Two fixed jobs don't need a
+# daemon, and this drops every moving part that made the cron version both
+# fragile and un-debuggable: no /etc/cron.d parsing, no PAM, no second copy of
+# the environment to keep in sync (jobs inherit this script's exports, and
+# hand-copying HA_NOTIFY_SERVICE and STATE_DIR into the cron block is where
+# earlier bugs came from), and no >> /proc/1/fd/1 redirect, because this loop
+# *is* the container's foreground process so job output reaches the log
+# directly.
+DIGEST_MARKER=/data/state/last_digest_week
+URGENT_MARKER=/data/state/last_urgent_run
+URGENT_INTERVAL=7200   # seconds -- every 2 hours, matching the old cron entry
+DIGEST_HOUR=6          # Monday 06:00 local, before school starts
 
-0 6 * * 1 root cd /app && uv run python -m instant_aula.weekly_digest >> /proc/1/fd/1 2>> /proc/1/fd/2
-0 */2 * * * root cd /app && uv run python -m instant_aula.urgent_check >> /proc/1/fd/1 2>> /proc/1/fd/2
-EOF
-chmod 0644 /etc/cron.d/instant-aula
+# Due when the current ISO week hasn't had a digest yet and its Monday 06:00
+# slot has passed. Deliberately "this week's digest is still owed" rather than
+# "it is exactly 06:00 on Monday": if the app happens to be down at that one
+# moment -- which is exactly what cost the 2026-09-21 digest -- a later start
+# still delivers the current week's plan instead of silently skipping to next
+# week. The week marker keeps it to once per week however often this loops.
+_digest_due() {
+  local this_week last_week hour
+  this_week=$(date +%G-W%V)
+  last_week=$(cat "$DIGEST_MARKER" 2>/dev/null || true)
+  [ "$this_week" = "$last_week" ] && return 1
+  hour=$((10#$(date +%H)))   # 10# so an hour like "06" isn't parsed as octal
+  [ "$(date +%u)" -eq 1 ] && [ "$hour" -lt "$DIGEST_HOUR" ] && return 1
+  return 0
+}
 
-echo "instant-aula: cron schedule installed, starting."
-exec cron -f
+_urgent_due() {
+  local last
+  last=$(cat "$URGENT_MARKER" 2>/dev/null || true)
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0   # missing or corrupt marker: run now
+  [ $(( $(date +%s) - last )) -ge "$URGENT_INTERVAL" ]
+}
+
+echo "instant-aula: scheduler starting -- digest Mondays 0${DIGEST_HOUR}:00, urgent check every $((URGENT_INTERVAL / 3600))h, TZ=$TZ, now $(date '+%F %T %Z')."
+
+while true; do
+  # Markers are written after each attempt whether it succeeded or not. A
+  # failing job must not be retried every 60 seconds: cron wouldn't have, and
+  # notify_failure already pushes the traceback. The cost is that a failed
+  # digest waits for next Monday, which is the better trade against turning one
+  # broken run into a notification flood.
+  if _digest_due; then
+    _run_job scheduler weekly_digest
+    date +%G-W%V > "$DIGEST_MARKER"
+  fi
+  if _urgent_due; then
+    _run_job scheduler urgent_check
+    date +%s > "$URGENT_MARKER"
+  fi
+  sleep 60
+done
