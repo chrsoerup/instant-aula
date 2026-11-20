@@ -31,6 +31,9 @@ W47 = {
           for t, h in [("DAN", "08"), ("MAT", "09")]],
         *[{"title": t, "event_type": "lesson", "start_datetime": f"2026-11-20T{h}:00+01:00"}
           for t, h in [("MUS", "08"), ("MAT", "08"), ("KLA", "10"), ("UUV", "12")]],
+        # Friday's last lesson, with its end time: the day normally runs to 13.40
+        {"title": "UUV", "event_type": "lesson", "start_datetime": "2026-11-20T12:55:00+01:00",
+         "end_datetime": "2026-11-20T13:40:00+01:00"},
         # a booked meeting in the same feed is not a lesson and must not count
         {"title": "Skole-hjem-samtale", "event_type": "school_home_meeting",
          "start_datetime": "2026-11-11T14:30:00+01:00"},
@@ -83,11 +86,74 @@ W47_EXPECTED = {
     "2026-11-17": "📝 6 noter",  # PE cancelled: no "Idrætstøj"
     "2026-11-18": "📝 6 noter",  # "i en opgave" is classwork, not homework
     "2026-11-19": "📝 6 noter",
-    "2026-11-20": "🎒 Medbring ynglingsbamse + fysiske spil",
+    "2026-11-20": "🎒 Slut kl. 13.00 · Medbring ynglingsbamse + fysiske spil",  # project day 8-13
 }
 
 
-@pytest.mark.parametrize("fixture,expected", [(W47, W47_EXPECTED)], ids=["2026-W47"])
+# --- 2026-W48: an ordinary week ----------------------------------------------
+# Misses found on real data: homework without "lektie" (Mon), a parents' evening
+# event (Thu: "Lanternefest"), and a shortened school day plus "Klippeklistredag"
+# (Fri). Timetable end times matter here: Friday normally runs to 13.40.
+
+
+def _lessons(date, slots):
+    return [{"title": code, "event_type": "lesson",
+             "start_datetime": f"{date}T{start}:00+01:00", "end_datetime": f"{date}T{end}:00+01:00"}
+            for code, start, end in slots]
+
+
+_SHORT_DAY = [("DAN", "08:00", "08:45"), ("MAT", "08:45", "09:30"), ("DAN", "12:10", "12:55")]
+W48 = {
+    "week": "2026-W48",
+    "calendar_events": [
+        *_lessons("2026-11-23", _SHORT_DAY),
+        *_lessons("2026-11-24", [("DAN", "08:00", "08:45"), ("IDR", "09:50", "10:35"),
+                                 ("RES", "09:50", "10:35"), ("DAN", "12:10", "12:55")]),
+        *_lessons("2026-11-25", [("P-FAG", "08:00", "08:45"), ("DAN", "12:10", "12:55")]),
+        *_lessons("2026-11-26", _SHORT_DAY),
+        *_lessons("2026-11-27", [("MUS", "08:00", "08:45"), ("MAT", "08:45", "09:30"),
+                                 ("UUV", "12:10", "12:55"), ("UUV", "12:55", "13:40")]),
+    ],
+    "meebook_weekplan": [{"name": "Barn Testesen", "week_plan": [
+        {"date": "mandag 23. nov.", "tasks": [{"pill": THEME, "content":
+            "Fællessang i musisk rum.\nHUSK LÆSEMAPPE!!\n"
+            "Barnet skulle gerne kunne læse en side i bogen, som barnet fik med hjem i forrige uge.\n"
+            "Holddeling, hvor vi arbejder i værkstederne: Læs, skriv, stav og spil. Børnene er delt "
+            "op i hold og læser på skift i den medbragte læsebog.\n"
+            "(Sidste gang inden efterårsferien)\nGR som det plejer"}]},
+        {"date": "tirsdag 24. nov.", "tasks": [{"pill": THEME, "content":
+            "Bibliotek i dag. HUSK lånte bøger.\n"
+            "Hvis vi når det arbejder vi lidt videre i Den kæmpestore pæres foldebog, hvor vi laver "
+            "indretningen af pæren.\nMeeBook, dansk, Den kæmpestore pære.\nGR som det plejer"}]},
+        {"date": "onsdag 25. nov.", "tasks": [
+            {"pill": THEME, "content":
+             "Vi arbejder i 3 danskhæfter med\ndet næste bogstav i alfabetet\nGR som vi plejer."},
+            {"pill": "P-fag", "content":
+             "Forløb som handler om insekter. Vi har lånt materialer fra Life Fonden og forløbet "
+             "hedder Mikrosafari.\nI dag skal vi bygge et insekthotel.\n"
+             "MeeBook, p-fag, Life Fondens Mikro safari."}]},
+        {"date": "torsdag 26. nov.", "tasks": [{"pill": THEME, "content":
+            "Den kæmpestore pære. Forløb på Gyldendal.\n"
+            "MeeBook, dansk, Den kæmpestore pære. Vi arbejder videre i forløbet og arbejder med "
+            "indretning af pæren + de 3 prøvelser.\nGR som vi plejer.\n"
+            "Lanternefest efter skoletid kl. 14.30-17.00 med forældre og søskende."}]},
+        {"date": "fredag 27. nov.", "tasks": [{"pill": THEME, "content":
+            "Kl 8.00-12.55\nEn anderledes dag: Klippeklistredag.+ syng julen ind.\n"
+            "Vi pynter klassen op og laver en flot juledør."}]},
+    ]}],
+}
+
+W48_EXPECTED = {
+    "2026-11-23": "🎒 Husk læsemappe · Lektier: Dansk",
+    "2026-11-24": "🎒 Husk lånte bøger · Idrætstøj",
+    "2026-11-25": "📝 6 noter",
+    "2026-11-26": "🎒 Lanternefest kl. 14.30-17.00",
+    "2026-11-27": "🎒 Klippeklistredag · Slut kl. 12.55",  # timetable runs to 13.40
+}
+
+
+@pytest.mark.parametrize("fixture,expected", [(W47, W47_EXPECTED), (W48, W48_EXPECTED)],
+                         ids=["2026-W47", "2026-W48"])
 def test_real_weeks(fixture, expected):
     titles = {d.date.isoformat(): summarise(d).title for d in days_from_weekly_summary(fixture)}
     assert titles == expected
@@ -125,12 +191,33 @@ def day(notes=None, timetable=()):
     ({"Klassen": ["HUSK: underskrevet seddel om lejrskole senest fredag"]}, [],
      "🎒 Lejrskole · Husk underskrevet seddel om lejrskole senest…"),
     ({"Dansk": ["Kan I huske, hvad vi læste sidst?"]}, [], "📝 1 note"),
+    ({"Klassen": ["Det var en festlig dag."]}, [], "📝 1 note"),  # "festlig" is not a fest
     ({"Klassen": ["I morgen skal I tage madpakke med."]}, [], "🎒 Medbring madpakke"),
+    # 2026-W48 Monday, verbatim apart from nothing identifying: homework without the
+    # word "lektie", a shouted reminder, and "medbragte" that is not an instruction.
+    ({"andet, Dansk, Temauge": [
+        "Fællessang i musisk rum.",
+        "HUSK LÆSEMAPPE!!",
+        "Barnet skulle gerne kunne læse en side i bogen, som barnet fik med hjem i forrige uge.",
+        "Holddeling, hvor vi arbejder i værkstederne: Læs, skriv, stav og spil. Børnene er delt op "
+        "i hold og læser på skift i den medbragte læsebog.",
+        "(Sidste gang inden efterårsferien)",
+        "GR som det plejer"]}, [], "🎒 Husk læsemappe · Lektier: Dansk"),
     # nothing at all -> no event
     ({}, ["DAN", "MAT"], None),
 ])
 def test_rules(notes, timetable, title):
     assert summarise(day(notes, timetable)).title == title
+
+
+def test_early_finish_needs_a_real_gap():
+    def at(end):
+        return Day(datetime.date(2026, 11, 27), [], {"Klassen": ["Kl 8.00-12.55"]},
+                   timetable_end=datetime.time(*end))
+    assert summarise(at((13, 40))).title == "🎒 Slut kl. 12.55"
+    assert summarise(at((13, 0))).title == "📝 1 note"   # 5 minutes is not an early pickup
+    assert summarise(Day(datetime.date(2026, 11, 27), [], {"Klassen": ["Kl 8.00-12.55"]})).title \
+        == "📝 1 note"                                     # no timetable: nothing to compare
 
 
 def test_meebook_date_across_new_year():

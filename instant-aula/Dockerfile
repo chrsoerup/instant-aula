@@ -8,6 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
+# uv caches in /root but the venv lives in /app (different filesystems in the
+# add-on), so hardlinks always fail and uv warns on every run. Copy instead.
+ENV UV_LINK_MODE=copy
 
 WORKDIR /app
 COPY pyproject.toml uv.lock* /app/

@@ -2,7 +2,7 @@
 
 One all-day event per school day, titled with what a parent has to act on:
 
-    🎒 Udflugt kl. 10-13 · Medbring bamse + fysiske spil · Idrætstøj · Lektier: Mat
+    🎒 Udflugt kl. 10-13 · Slut kl. 12.55 · Medbring bamse · Idrætstøj · Lektier: Mat
 
 and the teacher's full notes, grouped by subject, in the description. A day
 with notes but nothing the rules recognise is titled "📝 5 noter" instead of
@@ -96,17 +96,26 @@ _HOMEWORK_RE = re.compile(
     r"\blektie\w*|\bhjemmearbejde\b|\bhjemme\b"
     r"|\btil (?:i morgen|næste gang|på (?:mandag|tirsdag|onsdag|torsdag|fredag))\b"
     r"|\bskal (?:laves|læses|afleveres|øves)\b"
+    r"|\bskal(?:le)? gerne kunne\b"                      # "skulle gerne kunne læse ..." (W48)
+    r"|\blæse\w*\s+(?:en|et|\d+)\s+sider?\b"
     r"|\bsider?\s*\d+\s*(?:-|–|til)\s*\d+",
     re.IGNORECASE,
 )
 _EVENT_RE = re.compile(
-    r"\b(udflugt|ekskursion|motionsdag|cykeltur|klippedag|skolefoto|fotografering|teatertur"
+    r"\b(?:(?:udflugt|ekskursion|motionsdag|cykeltur|skolefoto|fotografering|teatertur"
     r"|biograftur|lejrskole|skolefri|fridag|juleafslutning|sommerafslutning|idrætsdag"
-    r"|emnedag|tur til)\w*",
+    r"|emnedag|temadag|forældremøde|forældrekaffe|forældredag)\w*"
+    r"|klippe\w*dag"                       # klippedag, klippeklistredag (W48)
+    r"|\w*fest(?:en|erne|er)?\b"          # lanternefest, julefest (W48) -- not "festlig"
+    r"|tur til)",
     re.IGNORECASE,
 )
 _TIME_RANGE_RE = re.compile(
     r"\bkl\.?\s*(\d{1,2}(?:[.:]\d{2})?)\s*(?:-|–|til)\s*(\d{1,2}(?:[.:]\d{2})?)", re.IGNORECASE)
+# A school-day span in the notes ("Kl 8.00-12.55"): starts in the morning, has minutes.
+_SCHOOL_HOURS_RE = re.compile(
+    r"\bkl\.?\s*([7-9])[.:](\d{2})\s*(?:-|–|til)\s*(\d{1,2})[.:](\d{2})", re.IGNORECASE)
+EARLY_FINISH = datetime.timedelta(minutes=15)  # less than this is noise, not an early pickup
 
 # Gear the timetable implies: timetable code prefix -> (subject word in notes, item).
 _GEAR = {"IDR": ("idræt", "Idrætstøj"), "SVØ": ("svøm", "Badetøj")}
@@ -120,8 +129,13 @@ def _cancel_re(word: str) -> re.Pattern:
     )
 
 
+def _calm(text: str) -> str:
+    """'LÆSEMAPPE' -> 'læsemappe'. Two-letter abbreviations (DR, GR) are kept."""
+    return " ".join(w.lower() if len(w) > 2 and w.isupper() else w for w in text.split(" "))
+
+
 def _short(text: str, limit: int = 40) -> str:
-    text = text.strip(" .,:;-")
+    text = _calm(text.strip(" .,:;-"))
     if len(text) <= limit:
         return text
     return text[:limit].rsplit(" ", 1)[0].rstrip(" ,;-") + "…"
@@ -151,7 +165,7 @@ def _event_item(sentence: str) -> str | None:
     m = _EVENT_RE.search(sentence)
     if not m:
         return None
-    word = "Tur" if m.group(1).lower() == "tur til" else m.group(1).capitalize()
+    word = "Tur" if m.group(0).lower() == "tur til" else m.group(0)[0].upper() + m.group(0)[1:].lower()
     if t := _TIME_RANGE_RE.search(sentence):
         return f"{word} kl. {t.group(1)}-{t.group(2)}"
     return word
@@ -162,6 +176,7 @@ class Day:
     date: datetime.date
     timetable: list[str] = field(default_factory=list)            # lesson codes, e.g. "IDR"
     notes: dict[str, list[str]] = field(default_factory=dict)     # heading -> lines
+    timetable_end: datetime.time | None = None                     # end of the last lesson
 
 
 @dataclass
@@ -174,8 +189,20 @@ class Summary:
     cancelled: list[str]  # timetable gear dropped because the notes cancel it
 
 
+def _early_finish(sentence: str, timetable_end: datetime.time | None) -> str | None:
+    """'Kl 8.00-12.55' when the timetable runs to 13.40 -> 'Slut kl. 12.55'."""
+    m = _SCHOOL_HOURS_RE.search(sentence)
+    if not m or timetable_end is None:
+        return None
+    end = datetime.time(int(m.group(3)), int(m.group(4)))
+    today = datetime.date(2000, 1, 1)
+    gap = datetime.datetime.combine(today, timetable_end) - datetime.datetime.combine(today, end)
+    return f"Slut kl. {m.group(3)}.{m.group(4)}" if gap >= EARLY_FINISH else None
+
+
 def summarise(day: Day) -> Summary:
     events: list[str] = []
+    hours: list[str] = []
     bring: list[str] = []
     homework: list[str] = []
     unmatched: list[str] = []
@@ -187,6 +214,9 @@ def summarise(day: Day) -> Summary:
             for sentence in _SENTENCE_RE.split(line):
                 if (item := _event_item(sentence)) and item not in events:
                     events.append(item)
+                    used = True
+                if (item := _early_finish(sentence, day.timetable_end)) and item not in hours:
+                    hours.append(item)
                     used = True
                 if (item := _bring_item(sentence)) and item not in bring:
                     bring.append(item)
@@ -209,7 +239,7 @@ def summarise(day: Day) -> Summary:
         elif not any(word in b.lower() for b in bring):  # already said by a "medbring"
             gear.append(item)
 
-    items = events + bring + gear + ([f"Lektier: {', '.join(homework)}"] if homework else [])
+    items = events + hours + bring + gear + ([f"Lektier: {', '.join(homework)}"] if homework else [])
     note_count = sum(len(lines) for lines in day.notes.values())
     if items:
         title = "🎒 " + " · ".join(items)
@@ -247,8 +277,15 @@ def days_from_weekly_summary(summary: dict) -> list[Day]:
             start = datetime.datetime.fromisoformat(ev["start_datetime"])
         except (KeyError, ValueError):
             continue
+        d = day(start.date())
         if title := (ev.get("title") or "").strip():
-            day(start.date()).timetable.append(title)
+            d.timetable.append(title)
+        try:
+            end = datetime.datetime.fromisoformat(ev["end_datetime"]).time()
+        except (KeyError, ValueError):
+            continue
+        if d.timetable_end is None or end > d.timetable_end:
+            d.timetable_end = end
 
     students = summary.get("meebook_weekplan") or []
     with_notes = {s.get("name") for s in students for d in s.get("week_plan", []) if d.get("tasks")}
