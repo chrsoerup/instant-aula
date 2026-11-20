@@ -1,7 +1,8 @@
 """Publish Aula's school events as an iCalendar feed for Home Assistant.
 
 Writes `skole.ics` -- special school events (trips, days off, school photos,
-...), important dates, and the parent meetings you have booked -- for
+...), important dates, the parent meetings you have booked, and one condensed
+line per school day from the Meebook weekplan (see day_summary) -- for
 `ics_server` to serve on the add-on's internal network, where Home Assistant's
 Remote calendar integration reads it. Nothing is written into Home Assistant
 itself, so there is nothing to keep in sync: every run regenerates the whole
@@ -16,8 +17,9 @@ What is deliberately left out:
   returns only the time you actually booked, so meetings come from there.
 - Birthdays. Not wanted.
 
-Deterministic, like the rest of instant-aula: titles are Aula's own, nothing is
-rewritten or summarised.
+Deterministic, like the rest of instant-aula: event titles are Aula's own; the
+day lines come from fixed rules in day_summary, with the teacher's full text in
+each event's description.
 
 After writing the file, asks Home Assistant to refresh the calendar entity
 named in HA_CALENDAR_ENTITY, because Remote calendar on its own only fetches
@@ -32,6 +34,7 @@ import sys
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from . import day_summary
 from .aula_cli import run_aula
 from .config import PROJECT_ROOT, load_settings
 from .ha_notify import call_service
@@ -240,6 +243,43 @@ def _fetch_calendar(settings, today: datetime.date) -> list[dict]:
     return rows
 
 
+def day_events(settings, today: datetime.date) -> list[dict]:
+    """One condensed all-day line per school day, this week and next.
+
+    Next week mostly yields only timetable gear (Idrætstøj): teachers write the
+    Meebook plan during the week itself. A failure here is logged and skipped
+    rather than raised, so the school events above still get published.
+    """
+    out = []
+    for offset in (0, 7):
+        iso_year, iso_week, _ = (today + datetime.timedelta(days=offset)).isocalendar()
+        week = f"{iso_year}-W{iso_week}"
+        try:
+            summary = run_aula(settings, "weekly-summary", "--provider", "meebook", "--week", week)
+        except Exception as exc:
+            print(f"calendar_sync: day lines for {week} skipped -- weekly-summary failed: {exc}")
+            continue
+        for day in day_summary.days_from_weekly_summary(summary):
+            if day.date < today:
+                continue
+            s = day_summary.summarise(day)
+            if s.title is None:
+                continue
+            print(f"calendar_sync: {day.date} {s.title!r} -- {s.note_count} notes, "
+                  f"{len(s.unmatched)} without a match"
+                  + (f", timetable gear cancelled by notes: {', '.join(s.cancelled)}" if s.cancelled else ""))
+            out.append({
+                "uid": f"aula-day-{day.date:%Y%m%d}@instant-aula",
+                "title": s.title,
+                "start": datetime.datetime.combine(day.date, datetime.time(), TZ),
+                "end": datetime.datetime.combine(day.date + datetime.timedelta(days=1), datetime.time(), TZ),
+                "all_day": True,
+                "location": None,
+                "description": s.description or None,
+            })
+    return out
+
+
 def main() -> int:
     settings = load_settings()
     today = datetime.datetime.now(TZ).date()
@@ -253,6 +293,7 @@ def main() -> int:
     events += important_date_events(important_rows, {ev["uid"] for ev in events})
     child_count = len({row.get("child_id") for row in meeting_rows if row.get("child_id")})
     events += meeting_events(meeting_rows, child_count)
+    events += day_events(settings, today)
 
     skipped = sum(1 for r in calendar_rows if (r.get("event_type") or "").lower() in EXCLUDED_TYPES)
     types = sorted({str(r.get("event_type")) for r in calendar_rows
