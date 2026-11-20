@@ -35,6 +35,17 @@ def _targets(settings: Settings) -> list[str]:
     return targets
 
 
+def call_service(domain: str, service: str, data: dict) -> None:
+    """Call any Home Assistant action through the Supervisor's Core API proxy."""
+    response = httpx.post(
+        f"{_SUPERVISOR_API}/services/{domain}/{service}",
+        headers={"Authorization": f"Bearer {os.environ['SUPERVISOR_TOKEN']}"},
+        json=data,
+        timeout=10,
+    )
+    response.raise_for_status()
+
+
 def notify(settings: Settings, title: str, message: str) -> None:
     token = os.environ["SUPERVISOR_TOKEN"]
     targets = _targets(settings)
