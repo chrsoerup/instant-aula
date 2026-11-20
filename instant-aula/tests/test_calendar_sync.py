@@ -89,3 +89,33 @@ def test_escaping_and_folding():
     assert r"SUMMARY:Tur\; madpakke\, idrætstøj\nog regntøj" in ics
     assert all(len(line.encode()) <= 75 for line in ics.split("\r\n"))
     assert _fold("æ" * 100).replace("\r\n ", "") == "æ" * 100
+
+
+def test_day_lines_end_to_end(monkeypatch):
+    """weekly-summary JSON -> day events -> iCalendar, with Aula mocked."""
+    from instant_aula import calendar_sync
+    from test_day_summary import W47
+
+    def fake_run_aula(settings, *args):
+        assert args[:3] == ("weekly-summary", "--provider", "meebook")
+        return W47 if args[4] == "2026-W47" else {"week": args[4]}
+
+    monkeypatch.setattr(calendar_sync, "run_aula", fake_run_aula)
+    events = calendar_sync.day_events(None, datetime.date(2026, 11, 18))  # Wednesday
+    assert [e["title"] for e in events] == [  # Mon/Tue are past and left out
+        "📝 6 noter", "📝 6 noter", "🎒 Medbring ynglingsbamse + fysiske spil"]
+    ics = render_ics(events)
+    assert "DTSTART;VALUE=DATE:20261120\r\nDTEND;VALUE=DATE:20261121" in ics
+    assert "UID:aula-day-20261120@instant-aula" in ics
+    assert "DESCRIPTION:andet\\, Dansk\\, Temauge:\\n- Projekt kl 8.00 -13.00" in ics
+
+
+def test_day_lines_failure_is_skipped(monkeypatch, capsys):
+    from instant_aula import calendar_sync
+
+    def broken(settings, *args):
+        raise RuntimeError("Aula down")
+
+    monkeypatch.setattr(calendar_sync, "run_aula", broken)
+    assert calendar_sync.day_events(None, datetime.date(2026, 11, 18)) == []
+    assert "weekly-summary failed: Aula down" in capsys.readouterr().out

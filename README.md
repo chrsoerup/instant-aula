@@ -4,7 +4,7 @@ Turns Aula's flood of notifications into three things:
 
 - **A weekly digest** — one push notification, once a week, with the school week (Meebook weekplan + calendar) as a day-by-day plain-text summary.
 - **Must-read alerts** — new messages and school-flagged important posts are pushed as soon as they show up; everything else (routine notifications, un-flagged posts) is left alone.
-- **A school calendar** — special school events (trips, days off, school photos), important dates and your booked parent meetings, as a calendar in Home Assistant. Regular lessons are left out. See "School calendar" below.
+- **A school calendar** — special school events (trips, days off, school photos), important dates, your booked parent meetings and one condensed line per school day ("🎒 Idrætstøj · Lektier: Mat"), as a calendar in Home Assistant. Regular lessons are left out. See "School calendar" below.
 
 Both are mostly deterministic Python — the source data (Meebook's weekplan text, Aula's own `is_important` flag on posts, and the fact that messages are personally addressed by a teacher rather than broadcast) already carries most of the signal needed, with no summarization required for grouping/formatting. No LLM is involved: the digest is the teachers' own wording, grouped by day and subject. An Ollama pass that prepended a "Husk" (remember) list was tried and removed — see "Why there's no LLM summary" below.
 
@@ -119,6 +119,7 @@ What goes in:
 - Calendar events that aren't lessons — trips, days off, school photos, theme days. Aula's own titles, unchanged.
 - Aula's important dates, marked with ❗.
 - Parent meetings, at the time you booked (not the school's whole booking window). With more than one child, the child's first name is put in front.
+- One all-day line per school day, this week and next, condensed from the Meebook weekplan by `day_summary` (below).
 
 What stays out: regular lessons (about 40 a week), the meeting booking windows, and birthdays.
 
@@ -127,6 +128,24 @@ What stays out: regular lessons (about 40 a week), the meeting booking windows, 
 1. Restart the app and find this line in its **Log** tab: `School calendar feed for Home Assistant's Remote calendar: http://<hostname>:8099/skole.ics`. If the calendar job hasn't run yet the feed answers 503, so wait for `calendar_sync: wrote ...` (or set `run_now` to `calendar` and restart).
 2. Settings > Devices & services > **Add integration** > **Remote calendar**. Name it `Skole` and paste the URL from the log.
 3. Remote calendar only re-reads its URL once a day. To have it pick up each new file straight away, put the calendar's entity (normally `calendar.skole`) in the app's **`ha_calendar_entity`** option, save and restart. The job then asks Home Assistant to refresh it after every run. Leave it empty to skip this.
+
+### The daily line
+
+Each school day with something to show gets one all-day event. Its title lists what a parent has to act on; its description holds the teacher's full notes for that day, grouped by subject.
+
+| Shown | When |
+|---|---|
+| `Udflugt kl. 10-13` | an event word (udflugt, motionsdag, skolefoto, lejrskole, fridag, …), with the time range if the sentence has one |
+| `Medbring bamse + fysiske spil` / `Husk …` | *medbring…*, an imperative *husk*, or *tag … med* — the rest of that clause, shortened |
+| `Idrætstøj` / `Badetøj` | `IDR` / `SVØ` in the timetable — **unless the same day's notes cancel it** ("ikke idræt", "idræt er aflyst") |
+| `Lektier: Mat, Engelsk` | a homework phrase: *lektie*, *hjemme*, *til i morgen / til næste gang*, *skal laves/læses/afleveres*, *side 10-11* |
+| `📝 6 noter` | the day has notes, but no rule matched anything |
+
+The rules are deliberately narrow — phrases in context, not single words — because single words misfire on real weeks: in a project week "opgave" was classwork every day, and the timetable said PE on a day the notes cancelled it. The 📝 fallback is the safety net for the opposite failure: a day the rules can't read still shows up, with everything one tap away, instead of being silently left out. That silent miss is what got the earlier LLM summary removed (see `highlights.py`).
+
+Each run logs a line per day — the title, the number of notes, how many of them no rule used, and any timetable gear the notes cancelled — so the rules can be checked from the Log tab.
+
+**Improving the rules:** `tests/test_day_summary.py` holds real weeks with the titles a parent would want, written by hand. When a week shows a miss or a false hit, add it there — anonymised first, since this repository is public (no teacher, child or place names) — then adjust the rules until every week passes. Run with `uv run pytest` in `instant-aula/`.
 
 **Why a feed, and why not in `/config/www`:** the file is regenerated from Aula on every run, so there is nothing to keep in sync and no record of what was created earlier. The app publishes no ports, so the feed is reachable only from inside Home Assistant (other apps included), not from the LAN — unlike `/config/www`, which Home Assistant serves to anyone on the network without a login. The data never leaves the device.
 
