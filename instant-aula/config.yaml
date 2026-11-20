@@ -1,5 +1,5 @@
 name: "Instant Aula"
-version: "1.2.0"
+version: "1.2.1"
 slug: "instant_aula"
 description: "Weekly Aula school digest, urgent alerts and a school-events calendar for Home Assistant"
 arch:

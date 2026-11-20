@@ -103,7 +103,7 @@ def test_day_lines_end_to_end(monkeypatch):
     monkeypatch.setattr(calendar_sync, "run_aula", fake_run_aula)
     events = calendar_sync.day_events(None, datetime.date(2026, 11, 18))  # Wednesday
     assert [e["title"] for e in events] == [  # Mon/Tue are past and left out
-        "📝 6 noter", "📝 6 noter", "🎒 Medbring ynglingsbamse + fysiske spil"]
+        "📝 6 noter", "📝 6 noter", "🎒 Slut kl. 13.00 · Medbring ynglingsbamse + fysiske spil"]
     ics = render_ics(events)
     assert "DTSTART;VALUE=DATE:20261120\r\nDTEND;VALUE=DATE:20261121" in ics
     assert "UID:aula-day-20261120@instant-aula" in ics

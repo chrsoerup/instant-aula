@@ -135,10 +135,11 @@ Each school day with something to show gets one all-day event. Its title lists w
 
 | Shown | When |
 |---|---|
-| `Udflugt kl. 10-13` | an event word (udflugt, motionsdag, skolefoto, lejrskole, fridag, …), with the time range if the sentence has one |
+| `Lanternefest kl. 14.30-17.00` | an event word (udflugt, motionsdag, skolefoto, lejrskole, fridag, …fest, klippe…dag, forældremøde, …), with the time range if the sentence has one |
+| `Slut kl. 12.55` | a school-day span in the notes ("Kl 8.00-12.55") ending at least 15 minutes before the timetable's last lesson |
 | `Medbring bamse + fysiske spil` / `Husk …` | *medbring…*, an imperative *husk*, or *tag … med* — the rest of that clause, shortened |
 | `Idrætstøj` / `Badetøj` | `IDR` / `SVØ` in the timetable — **unless the same day's notes cancel it** ("ikke idræt", "idræt er aflyst") |
-| `Lektier: Mat, Engelsk` | a homework phrase: *lektie*, *hjemme*, *til i morgen / til næste gang*, *skal laves/læses/afleveres*, *side 10-11* |
+| `Lektier: Mat, Engelsk` | a homework phrase: *lektie*, *hjemme*, *til i morgen / til næste gang*, *skal laves/læses/afleveres*, *skulle gerne kunne*, *læse en side*, *side 10-11* |
 | `📝 6 noter` | the day has notes, but no rule matched anything |
 
 The rules are deliberately narrow — phrases in context, not single words — because single words misfire on real weeks: in a project week "opgave" was classwork every day, and the timetable said PE on a day the notes cancelled it. The 📝 fallback is the safety net for the opposite failure: a day the rules can't read still shows up, with everything one tap away, instead of being silently left out. That silent miss is what got the earlier LLM summary removed (see `highlights.py`).
