@@ -96,6 +96,8 @@ _HOMEWORK_RE = re.compile(
     r"\blektie\w*|\bhjemmearbejde\b|\bhjemme\b"
     r"|\btil (?:i morgen|næste gang|på (?:mandag|tirsdag|onsdag|torsdag|fredag))\b"
     r"|\bskal (?:laves|læses|afleveres|øves)\b"
+    r"|\bskal(?:le)? gerne kunne\b"                      # "skulle gerne kunne læse ..." (W48)
+    r"|\blæse\w*\s+(?:en|et|\d+)\s+sider?\b"
     r"|\bsider?\s*\d+\s*(?:-|–|til)\s*\d+",
     re.IGNORECASE,
 )
@@ -120,8 +122,13 @@ def _cancel_re(word: str) -> re.Pattern:
     )
 
 
+def _calm(text: str) -> str:
+    """'LÆSEMAPPE' -> 'læsemappe'. Two-letter abbreviations (DR, GR) are kept."""
+    return " ".join(w.lower() if len(w) > 2 and w.isupper() else w for w in text.split(" "))
+
+
 def _short(text: str, limit: int = 40) -> str:
-    text = text.strip(" .,:;-")
+    text = _calm(text.strip(" .,:;-"))
     if len(text) <= limit:
         return text
     return text[:limit].rsplit(" ", 1)[0].rstrip(" ,;-") + "…"

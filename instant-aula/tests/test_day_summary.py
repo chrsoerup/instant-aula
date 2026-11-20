@@ -126,6 +126,16 @@ def day(notes=None, timetable=()):
      "🎒 Lejrskole · Husk underskrevet seddel om lejrskole senest…"),
     ({"Dansk": ["Kan I huske, hvad vi læste sidst?"]}, [], "📝 1 note"),
     ({"Klassen": ["I morgen skal I tage madpakke med."]}, [], "🎒 Medbring madpakke"),
+    # 2026-W48 Monday, verbatim apart from nothing identifying: homework without the
+    # word "lektie", a shouted reminder, and "medbragte" that is not an instruction.
+    ({"andet, Dansk, Temauge": [
+        "Fællessang i musisk rum.",
+        "HUSK LÆSEMAPPE!!",
+        "Barnet skulle gerne kunne læse en side i bogen, som barnet fik med hjem i forrige uge.",
+        "Holddeling, hvor vi arbejder i værkstederne: Læs, skriv, stav og spil. Børnene er delt op "
+        "i hold og læser på skift i den medbragte læsebog.",
+        "(Sidste gang inden efterårsferien)",
+        "GR som det plejer"]}, [], "🎒 Husk læsemappe · Lektier: Dansk"),
     # nothing at all -> no event
     ({}, ["DAN", "MAT"], None),
 ])
