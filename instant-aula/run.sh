@@ -12,6 +12,7 @@ export AULA_MITID_PASSWORD=$(jq -r '.aula_mitid_password // empty' "$OPTS")
 HA_NOTIFY_SERVICE=$(jq -r '.ha_notify_service' "$OPTS")
 RUN_MITID_LOGIN=$(jq -r '.run_mitid_login' "$OPTS")
 RUN_NOW=$(jq -r '.run_now // "none"' "$OPTS")
+export HA_CALENDAR_ENTITY=$(jq -r '.ha_calendar_entity // empty' "$OPTS")
 
 # Exported rather than plain shell variables: both the run_now block and the
 # scheduler loop below start these modules as child processes of this script,
@@ -21,6 +22,11 @@ RUN_NOW=$(jq -r '.run_now // "none"' "$OPTS")
 # whole backlog.
 export HA_NOTIFY_SERVICE
 export STATE_DIR=/data/state
+# The school calendar feed (calendar_sync writes it, ics_server serves it).
+# Under /data so it survives restarts and HA can read the last good copy even
+# while Aula is unreachable.
+export ICS_DIR=/data/www
+export ICS_PORT=8099
 
 # Adopt a token file staged in Home Assistant's own config directory, if one
 # is there. This is the no-MitID re-auth path: log in on a PC (where the QR is
@@ -82,6 +88,7 @@ case "$RUN_NOW" in
   none) ;;
   urgent) _run_job run_now urgent_check ;;
   digest) _run_job run_now weekly_digest ;;
+  calendar) _run_job run_now calendar_sync ;;
   both)   _run_job run_now urgent_check; _run_job run_now weekly_digest ;;
   *)      echo "run_now: unrecognised value '$RUN_NOW' -- skipping." ;;
 esac
@@ -118,6 +125,8 @@ fi
 DIGEST_MARKER=/data/state/last_digest_week
 URGENT_MARKER=/data/state/last_urgent_run
 URGENT_INTERVAL=7200   # seconds -- every 2 hours, matching the old cron entry
+CALENDAR_MARKER=/data/state/last_calendar_run
+CALENDAR_INTERVAL=21600   # seconds -- every 6 hours; school events change rarely
 DIGEST_HOUR=6          # Monday 06:00 local, before school starts
 
 # Due when the current ISO week hasn't had a digest yet and its Monday 06:00
@@ -136,14 +145,32 @@ _digest_due() {
   return 0
 }
 
-_urgent_due() {
-  local last
-  last=$(cat "$URGENT_MARKER" 2>/dev/null || true)
-  [[ "$last" =~ ^[0-9]+$ ]] || last=0   # missing or corrupt marker: run now
-  [ $(( $(date +%s) - last )) -ge "$URGENT_INTERVAL" ]
+# Interval jobs: due when the marker (a Unix timestamp) is at least $2 seconds
+# old. A missing or corrupt marker counts as due, so a fresh install runs both
+# straight away.
+_interval_due() {
+  local marker=$1 interval=$2 last
+  last=$(cat "$marker" 2>/dev/null || true)
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  [ $(( $(date +%s) - last )) -ge "$interval" ]
 }
 
-echo "instant-aula: scheduler starting -- digest Mondays 0${DIGEST_HOUR}:00, urgent check every $((URGENT_INTERVAL / 3600))h, TZ=$TZ, now $(date '+%F %T %Z')."
+# The calendar feed server runs alongside the scheduler for as long as the
+# container does. Started here, after run_now, so a manual calendar run has
+# already produced the file; checked every loop and restarted if it died, since
+# nothing else would notice.
+ICS_PID=
+_ensure_ics_server() {
+  if [ -z "$ICS_PID" ] || ! kill -0 "$ICS_PID" 2>/dev/null; then
+    [ -n "$ICS_PID" ] && echo "ics_server exited -- restarting."
+    ( cd /app && exec uv run python -m instant_aula.ics_server ) &
+    ICS_PID=$!
+  fi
+}
+_ensure_ics_server
+echo "School calendar feed for Home Assistant's Remote calendar: http://${HOSTNAME}:${ICS_PORT}/skole.ics"
+
+echo "instant-aula: scheduler starting -- digest Mondays 0${DIGEST_HOUR}:00, urgent check every $((URGENT_INTERVAL / 3600))h, calendar every $((CALENDAR_INTERVAL / 3600))h, TZ=$TZ, now $(date '+%F %T %Z')."
 
 while true; do
   # Markers are written after each attempt whether it succeeded or not. A
@@ -155,9 +182,14 @@ while true; do
     _run_job scheduler weekly_digest
     date +%G-W%V > "$DIGEST_MARKER"
   fi
-  if _urgent_due; then
+  if _interval_due "$URGENT_MARKER" "$URGENT_INTERVAL"; then
     _run_job scheduler urgent_check
     date +%s > "$URGENT_MARKER"
   fi
+  if _interval_due "$CALENDAR_MARKER" "$CALENDAR_INTERVAL"; then
+    _run_job scheduler calendar_sync
+    date +%s > "$CALENDAR_MARKER"
+  fi
+  _ensure_ics_server
   sleep 60
 done

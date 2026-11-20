@@ -1,9 +1,10 @@
 # instant-aula
 
-Turns Aula's flood of notifications into two things:
+Turns Aula's flood of notifications into three things:
 
 - **A weekly digest** — one push notification, once a week, with the school week (Meebook weekplan + calendar) as a day-by-day plain-text summary.
 - **Must-read alerts** — new messages and school-flagged important posts are pushed as soon as they show up; everything else (routine notifications, un-flagged posts) is left alone.
+- **A school calendar** — special school events (trips, days off, school photos), important dates and your booked parent meetings, as a calendar in Home Assistant. Regular lessons are left out. See "School calendar" below.
 
 Both are mostly deterministic Python — the source data (Meebook's weekplan text, Aula's own `is_important` flag on posts, and the fact that messages are personally addressed by a teacher rather than broadcast) already carries most of the signal needed, with no summarization required for grouping/formatting. No LLM is involved: the digest is the teachers' own wording, grouped by day and subject. An Ollama pass that prepended a "Husk" (remember) list was tried and removed — see "Why there's no LLM summary" below.
 
@@ -82,7 +83,7 @@ Two Home Assistant terminology/UI changes to know going in: **"Add-ons" was rena
    Put it in `/config`, **not** `/config/www` — anything under `www/` is served to the network. Then **restart the app**: `run.sh` moves the file into `/data/home/.config/aula/tokens.json` (mode 600) and deletes the staged copy, logging `Imported MitID tokens from ...`. Tokens then survive future rebuilds/updates. This is also the re-auth path when the refresh token eventually expires.
 
    **b. Interactive login inside the container.** Needs `docker exec`, which needs Protection mode off on the Terminal & SSH app — and recent Home Assistant has removed the UI toggle for that (it's not in the Info tab or the ⋮ menu, and `ha addons security` has no `--protected` flag), leaving only a raw Supervisor API call. Assume this route is unavailable and use (a). If you do get a shell in: `cd /app && uv run python scripts/mitid_login.py --output text -v login`, which writes a QR page into HA's `www/` folder and prints its URL (`http://homeassistant.local:8123/local/instant_aula_mitid.html`) — open that on a computer, not on the phone doing the scanning, and scan **both** QR codes on the page. The page refreshes itself; don't reload it.
-8. Check the app's **Log** tab for `instant-aula: scheduler starting -- ...` with no `jq` errors, and for `Imported MitID tokens` if you came via 7a. That line reports the schedule and the container's current local time, so it's also the quickest timezone sanity check. To confirm delivery without waiting for the schedule, set **`run_now`** on the Configuration tab to `urgent`, `digest` or `both`, save, and restart: the chosen job runs once at startup, before the scheduler loop begins, and logs `run_now: <job> finished` or a traceback. Set it back to `none` afterwards, or it repeats on every restart. (This option exists because without a container shell — see 7b — there's otherwise no way to trigger a run on demand.)
+8. Check the app's **Log** tab for `instant-aula: scheduler starting -- ...` with no `jq` errors, and for `Imported MitID tokens` if you came via 7a. That line reports the schedule and the container's current local time, so it's also the quickest timezone sanity check. To confirm delivery without waiting for the schedule, set **`run_now`** on the Configuration tab to `urgent`, `digest`, `calendar` or `both`, save, and restart: the chosen job runs once at startup, before the scheduler loop begins, and logs `run_now: <job> finished` or a traceback. Set it back to `none` afterwards, or it repeats on every restart. (This option exists because without a container shell — see 7b — there's otherwise no way to trigger a run on demand.)
 
    Note that `urgent_check`'s *first* run only baselines the current state and deliberately sends nothing; run it twice to see real behaviour. `digest` sends unconditionally, so it's the better one-shot delivery test.
 9. Once confirmed working, disable/delete the old `InstantAulaWeeklyDigest` / `InstantAulaUrgentCheck` Windows Scheduled Tasks (PowerShell: `Unregister-ScheduledTask`, or Task Scheduler GUI) — leaving both active alongside the app would double-run and race on `state.json`. Note: these tasks run the *current* code directly from this working copy, not a separate deployment — once this repo's code moved to Home Assistant-only delivery, the old tasks stopped being able to notify at all (they need `SUPERVISOR_TOKEN`, which only exists inside the app's container), so there's likely already a gap in coverage between that change and finishing this setup.
@@ -101,12 +102,35 @@ Two markers under `/data/state` track what has run:
 
 - `last_digest_week` — the ISO week (`2026-W40`) of the last digest. The digest is due when the current week differs *and* that week's Monday 06:00 has passed. That's deliberately "this week's digest is still owed" rather than "it's exactly Monday 06:00": if the app is down at that one moment, a later start still delivers the current week's plan instead of skipping to the next one. The marker keeps it to once per week.
 - `last_urgent_run` — a Unix timestamp; the urgent check runs when it's at least 2 hours old. A missing or corrupt marker counts as due.
+- `last_calendar_run` — the same, for the calendar job, every 6 hours.
 
 Markers are written after each attempt whether it succeeded or failed, so a broken job isn't retried every 60 seconds. A failed digest therefore waits for the next Monday — the trade against turning one bad run into a flood of notifications. `notify_failure` already pushes the traceback, so the failure isn't silent (unless notification delivery is itself what broke).
 
 **If SMB (Samba) is blocked on your network** (some corporate-managed laptops block outbound port 445 as policy — check with `Test-NetConnection -ComputerName <device-ip> -Port 445` from PowerShell), skip the Samba app entirely; the repository-based install above never needs it.
 
 **A cloud-hosted scheduler (GitHub Actions) was tried earlier and deliberately reverted**, before this app existed. It solved the weekend-off problem — runners are always on regardless of the local machine's state — but routed the MitID session and the kid's school data through whichever datacenter GitHub happened to schedule the runner in (confirmed US-based, not EU, with no way to pin the region on a personal/free plan). That's not an acceptable trade-off for a minor's school data. Running on self-hosted, always-on hardware on the home network (the Home Assistant device) gets the same "always on" property without that trade-off.
+
+## School calendar
+
+`calendar_sync` (every 6 hours) writes `skole.ics` with the next eight weeks of school events, and `ics_server` serves that one file on the app's internal network. Home Assistant reads it with its built-in **Remote calendar** integration, so it appears like any other calendar (the Calendar page, dashboards, automations).
+
+What goes in:
+
+- Calendar events that aren't lessons — trips, days off, school photos, theme days. Aula's own titles, unchanged.
+- Aula's important dates, marked with ❗.
+- Parent meetings, at the time you booked (not the school's whole booking window). With more than one child, the child's first name is put in front.
+
+What stays out: regular lessons (about 40 a week), the meeting booking windows, and birthdays.
+
+**Setup, once, after updating the app to 1.1.0:**
+
+1. Restart the app and find this line in its **Log** tab: `School calendar feed for Home Assistant's Remote calendar: http://<hostname>:8099/skole.ics`. If the calendar job hasn't run yet the feed answers 503, so wait for `calendar_sync: wrote ...` (or set `run_now` to `calendar` and restart).
+2. Settings > Devices & services > **Add integration** > **Remote calendar**. Name it `Skole` and paste the URL from the log.
+3. Remote calendar only re-reads its URL once a day. To have it pick up each new file straight away, put the calendar's entity (normally `calendar.skole`) in the app's **`ha_calendar_entity`** option, save and restart. The job then asks Home Assistant to refresh it after every run. Leave it empty to skip this.
+
+**Why a feed, and why not in `/config/www`:** the file is regenerated from Aula on every run, so there is nothing to keep in sync and no record of what was created earlier. The app publishes no ports, so the feed is reachable only from inside Home Assistant (other apps included), not from the LAN — unlike `/config/www`, which Home Assistant serves to anyone on the network without a login. The data never leaves the device.
+
+Needs `aula` 1.22 or newer, the first version that reports each calendar event's type and has the `meetings` command.
 
 ## Refreshing the MitID token
 
