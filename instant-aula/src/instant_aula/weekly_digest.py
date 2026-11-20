@@ -85,7 +85,7 @@ def _render_slot(start, end, events: list[dict]) -> str:
 
     Aula returns one event per *staff assignment*, not per lesson: a Danish
     lesson with a resource teacher present comes back as two events with
-    different ids on the same slot (DAN/Mette + RES/Katrine), and a PE lesson
+    different ids on the same slot (DAN/teacher A + RES/teacher B), and a PE lesson
     with two teachers as two IDR events. Printed one per line that was 40 lines
     to describe 26 periods, and it read as though Monday 09.50 held two separate
     lessons. Measured on week 2026-W38: 12 of 26 slots carried more than one
