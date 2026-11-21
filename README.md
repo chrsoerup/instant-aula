@@ -112,22 +112,31 @@ Markers are written after each attempt whether it succeeded or failed, so a brok
 
 ## School calendar
 
-`calendar_sync` (every 6 hours) writes `skole.ics` with the next eight weeks of school events, and `ics_server` serves that one file on the app's internal network. Home Assistant reads it with its built-in **Remote calendar** integration, so it appears like any other calendar (the Calendar page, dashboards, automations).
+`calendar_sync` (every 6 hours) writes one feed per child with the next eight weeks of school events — `anna.ics`, `ben.ics`, named after the child's first name — plus the original `skole.ics`. `ics_server` serves them on the app's internal network. Home Assistant reads each one with its built-in **Remote calendar** integration, so every child appears as a calendar of their own (own colour on the family dashboard, the Calendar page, automations).
 
 What goes in:
 
 - Calendar events that aren't lessons — trips, days off, school photos, theme days. Aula's own titles, unchanged.
 - Aula's important dates, marked with ❗.
-- Parent meetings, at the time you booked (not the school's whole booking window). With more than one child, the child's first name is put in front.
+- Parent meetings, at the time you booked (not the school's whole booking window), in the feed of the child they are for.
 - One all-day line per school day, this week and next, condensed from the Meebook weekplan by `day_summary` (below).
 
 What stays out: regular lessons (about 40 a week), the meeting booking windows, and birthdays.
 
-**Setup, once, after updating the app to 1.1.0:**
+### Which events belong to which child
 
-1. Restart the app and find this line in its **Log** tab: `School calendar feed for Home Assistant's Remote calendar: http://<hostname>:8099/skole.ics`. If the calendar job hasn't run yet the feed answers 503, so wait for `calendar_sync: wrote ...` (or set `run_now` to `calendar` and restart).
-2. Settings > Devices & services > **Add integration** > **Remote calendar**. Name it `Skole` and paste the URL from the log.
-3. Remote calendar only re-reads its URL once a day. To have it pick up each new file straight away, put the calendar's entity (normally `calendar.skole`) in the app's **`ha_calendar_entity`** option, save and restart. The job then asks Home Assistant to refresh it after every run. Leave it empty to skip this.
+Aula answers that itself: the calendar is fetched once per child (`aula calendar --institution-profile-id <child>`), so an event comes back for the child it belongs to — a kindergarten party stays out of the school child's calendar. An event that belongs to both children comes back for both and is in both feeds. Day lines are cut per child too, from the weekly summary: lessons by the child's profile id, Meebook notes by first name.
+
+Two cases Aula doesn't attribute, both shown in **every** child's feed rather than risk hiding them, and named in the Log (`not attributable to a child`, `important date(s) found in no child's calendar`): events addressed only to the parents' own profiles, and important dates that fall outside both children's calendars. If one of them is clearly one child's, the Log line tells you which — that is the signal to refine the rule.
+
+### Setup, per child
+
+1. Run the job (`run_now: calendar`, restart, or wait up to 6 hours) and read the Log: each feed prints its exact address, `calendar_sync: wrote … -> http://<hostname>:8099/<name>.ics`. Until a feed exists it answers 503.
+2. Settings > Devices & services > **Add integration** > **Remote calendar**, give it a name (e.g. `Ben_Kindergarten`) and paste that child's address.
+3. Remote calendar only re-reads its URL once a day. Add each new calendar entity (e.g. `calendar.ben_kindergarten`) to whatever refreshes your calendars — an automation calling `homeassistant.update_entity` every 30 minutes works well — or put a single one in the app's **`ha_calendar_entity`** option so the job refreshes it after every run.
+4. **The calendar you already had** points at `skole.ics`. Set the app's **`school_feed_child`** option to part of that child's name (e.g. `anna`) and `skole.ics` becomes exactly that child's feed, so nothing needs re-adding. Left empty, `skole.ics` holds everyone's events, each titled with the child's name unless it belongs to all of them — useful while migrating, confusing long-term.
+
+If the profile can't be read, the job falls back to one combined feed (`skole.ics` only), as in 1.2.x.
 
 ### The daily line
 
