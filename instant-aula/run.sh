@@ -171,7 +171,7 @@ _ensure_ics_server() {
   fi
 }
 _ensure_ics_server
-echo "School calendar feeds for Home Assistant's Remote calendar: http://${HOSTNAME}:${ICS_PORT}/<name>.ics -- one per child (e.g. anna.ics, ben.ics) plus skole.ics; calendar_sync prints each exact URL when it runs."
+echo "School calendar feeds for Home Assistant's Remote calendar: http://${HOSTNAME}:${ICS_PORT}/<name>.ics -- one per child (e.g. anna.ics, ben.ics), parent.ics and skole.ics; calendar_sync prints each exact URL when it runs."
 
 echo "instant-aula: scheduler starting -- digest Mondays 0${DIGEST_HOUR}:00, urgent check every $((URGENT_INTERVAL / 3600))h, calendar every $((CALENDAR_INTERVAL / 3600))h, TZ=$TZ, now $(date '+%F %T %Z')."
 
