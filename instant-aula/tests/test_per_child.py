@@ -1,9 +1,11 @@
-"""One feed per child plus a parent feed: attribution, details, fallbacks.
+"""One feed per child: attribution, events addressed to the parent, fallbacks.
 
 Aula is faked at the `run_aula` boundary. Names and ids are made up. The key
 properties: an event comes back from `aula calendar --institution-profile-id
 <child>` only for the child it belongs to, and what Aula addresses to the parent
-alone goes to the parent calendar with a description of who is invited.
+alone is placed with the child it concerns (groups, then institution), described
+with what Aula says, and shown for every child only when Aula's record settles
+nothing. There is no parent calendar: every event concerns a child.
 """
 
 import datetime
@@ -11,8 +13,8 @@ import datetime
 import pytest
 
 from instant_aula import calendar_sync, day_summary
-from instant_aula.calendar_sync import (Child, build_feeds, describe_parent_event, parse_children,
-                                        slugify)
+from instant_aula.calendar_sync import (Child, build_feeds, children_for_event, describe_parent_event,
+                                        parse_children, slugify)
 from instant_aula.ics_server import FEED_PATH
 
 TODAY = datetime.date(2026, 11, 18)
@@ -37,12 +39,15 @@ COMBINED = [LESSON, OUTING, PHOTO, TRIP, PARENTS, PARTY]    # PARENTS, PARTY: ad
 
 PARTY_RAW = {                                              # Aula's own record of the party
     "id": 600, "title": "Juletræsfest", "institutionName": "Børnehaven Stjernen",
+    "invitedGroupHomeChildren": [{"id": ANNA}],
     "institutionCode": KINDERGARTEN, "creatorName": "Pædagog Testesen",
     "invitedGroups": [{"name": "Stuen", "institutionName": "Børnehaven Stjernen"},
                       {"name": "Kattegat", "institutionName": "Børnehaven Stjernen"}],
     "responseRequired": True, "responseDeadline": "2026-11-27T12:00:00+01:00", "responseStatus": None,
     "description": {"html": "<p>Vi holder juletræsfest med forældre og søskende.</p><p>Medbring en kage.</p>"},
 }
+
+MEETING_RAW = {"id": 400, "title": "Forældremøde", "institutionName": "Testskolen", "institutionCode": SCHOOL}
 
 SUMMARY = {
     "week": "2026-W47",
@@ -72,7 +77,8 @@ def make_fake(profile=None, fail_profile=False, fail_details=False, rows=None):
         if cmd == "calendar" and "--event-id" in args:
             if fail_details:
                 raise RuntimeError("aula down")
-            return PARTY_RAW if args[args.index("--event-id") + 1] == "600" else {"id": 400, "title": "Forældremøde"}
+            wanted = args[args.index("--event-id") + 1]
+            return {"600": PARTY_RAW, "400": MEETING_RAW}.get(wanted, {"id": int(wanted)})   # 500: says nothing
         if cmd == "calendar":
             if args[args.index("--start-date") + 1] != f"{TODAY:%Y-%m-%d}":
                 return []                              # only the first 14-day chunk has events
@@ -106,33 +112,61 @@ def event(feeds, name, title):
 def test_each_childs_events_end_up_in_their_own_feed(monkeypatch):
     monkeypatch.setattr(calendar_sync, "run_aula", make_fake())
     feeds = build_feeds(None, TODAY, school_child="ben")
-    assert sorted(feeds) == ["anna.ics", "ben.ics", "parent.ics", "skole.ics"]
-    assert titles(feeds, "anna.ics") == sorted(["Børnehavens udflugt", "Fælles tur"])
-    assert titles(feeds, "ben.ics") == sorted(["Fælles tur", "Skole-hjem-samtale", "Skolefoto",
-                                               "🎒 Husk madpakke · Idrætstøj"])
+    assert sorted(feeds) == ["anna.ics", "ben.ics", "skole.ics"]           # no parent calendar
     assert feeds["anna.ics"][0] == "Anna" and feeds["ben.ics"][0] == "Ben"
+    assert {"Børnehavens udflugt", "Fælles tur"} <= set(titles(feeds, "anna.ics"))
+    assert {"Fælles tur", "Skole-hjem-samtale", "Skolefoto", "🎒 Husk madpakke · Idrætstøj"} <= set(titles(feeds, "ben.ics"))
+    assert "Børnehavens udflugt" not in titles(feeds, "ben.ics") and "Skolefoto" not in titles(feeds, "anna.ics")
 
 
-def test_what_aula_addresses_to_the_parent_goes_to_the_parent_calendar_only(monkeypatch):
+def test_an_event_for_the_parent_goes_to_the_child_in_the_invited_groups(monkeypatch, capsys):
     monkeypatch.setattr(calendar_sync, "run_aula", make_fake())
     feeds = build_feeds(None, TODAY, school_child="ben")
-    assert titles(feeds, "parent.ics") == sorted(["Forældremøde", "❗ Juletræsfest", "❗ Pædagogisk dag"])
-    assert feeds["parent.ics"][0] == "Forældre"
-    for child_feed in ("anna.ics", "ben.ics", "skole.ics"):          # skole.ics = Ben's feed
-        assert not {"Forældremøde", "❗ Juletræsfest", "❗ Pædagogisk dag"} & set(titles(feeds, child_feed))
+    assert "❗ Juletræsfest" in titles(feeds, "anna.ics")
+    assert "❗ Juletræsfest" not in titles(feeds, "ben.ics")
+    assert "'❗ Juletræsfest' -> Anna (groups)" in capsys.readouterr().out
 
 
-def test_the_parent_event_says_who_is_invited(monkeypatch):
+def test_otherwise_it_goes_to_the_child_at_the_institution_that_sent_it(monkeypatch, capsys):
     monkeypatch.setattr(calendar_sync, "run_aula", make_fake())
     feeds = build_feeds(None, TODAY, school_child="ben")
-    text = event(feeds, "parent.ics", "❗ Juletræsfest")["description"]
-    assert text.startswith("Sendt til forældre i Aula – ikke til et af børnene.")
-    assert "Institution: Børnehaven Stjernen (samme institution som Anna)" in text   # points at the child
+    assert "Forældremøde" in titles(feeds, "ben.ics") and "Forældremøde" not in titles(feeds, "anna.ics")
+    assert "'Forældremøde' -> Ben (institution)" in capsys.readouterr().out
+
+
+def test_when_aulas_record_settles_nothing_the_event_is_shown_for_every_child_and_says_so(monkeypatch, capsys):
+    monkeypatch.setattr(calendar_sync, "run_aula", make_fake())
+    feeds = build_feeds(None, TODAY, school_child="ben")
+    for name in ("anna.ics", "ben.ics"):
+        assert "❗ Pædagogisk dag" in titles(feeds, name)
+    text = event(feeds, "anna.ics", "❗ Pædagogisk dag")["description"]
+    assert "Kunne ikke afgøre hvilket barn det gælder – vist hos alle børn." in text
+    assert "could not tell, shown for all" in capsys.readouterr().out
+
+
+def test_the_event_says_why_it_is_there_and_who_is_invited(monkeypatch):
+    monkeypatch.setattr(calendar_sync, "run_aula", make_fake())
+    feeds = build_feeds(None, TODAY, school_child="ben")
+    text = event(feeds, "anna.ics", "❗ Juletræsfest")["description"]
+    lines = text.splitlines()
+    assert lines[0] == "Sendt til forældre i Aula – ikke direkte til et af børnene."
+    assert lines[1] == "Vist hos Anna: barnet er i de inviterede grupper."
+    assert "Institution: Børnehaven Stjernen (samme institution som Anna)" in text
     assert "Inviterede grupper: Stuen, Kattegat" in text
     assert "Oprettet af: Pædagog Testesen" in text
     assert "Svar kræves senest 2026-11-27" in text
     assert "Står på Aulas liste over vigtige datoer." in text
     assert text.endswith("Vi holder juletræsfest med forældre og søskende.\nMedbring en kage.")
+    assert "Vist hos Ben: samme institution som invitationen." in event(feeds, "ben.ics", "Forældremøde")["description"]
+
+
+def test_a_failed_detail_lookup_shows_the_event_for_every_child(monkeypatch, capsys):
+    monkeypatch.setattr(calendar_sync, "run_aula", make_fake(fail_details=True))
+    feeds = build_feeds(None, TODAY, school_child="ben")
+    for name in ("anna.ics", "ben.ics"):
+        assert "❗ Juletræsfest" in titles(feeds, name)          # nothing hidden when Aula can't be asked
+    assert event(feeds, "ben.ics", "❗ Juletræsfest")["description"].startswith("Sendt til forældre i Aula")
+    assert "details for event 600 unavailable" in capsys.readouterr().out
 
 
 def test_details_come_from_one_lookup_per_parent_event(monkeypatch):
@@ -140,15 +174,17 @@ def test_details_come_from_one_lookup_per_parent_event(monkeypatch):
     monkeypatch.setattr(calendar_sync, "run_aula", fake)
     build_feeds(None, TODAY, school_child="ben")
     looked_up = sorted(c[c.index("--event-id") + 1] for c in fake.calls if "--event-id" in c)
-    assert looked_up == ["400", "500", "600"]            # only the parent-only events, not the children's
+    assert looked_up == ["400", "500", "600"]            # only the events addressed to the parent
 
 
-def test_a_failed_detail_lookup_still_publishes_the_event(monkeypatch, capsys):
-    monkeypatch.setattr(calendar_sync, "run_aula", make_fake(fail_details=True))
-    feeds = build_feeds(None, TODAY, school_child="ben")
-    assert "❗ Juletræsfest" in titles(feeds, "parent.ics")
-    assert event(feeds, "parent.ics", "❗ Juletræsfest")["description"].startswith("Sendt til forældre i Aula")
-    assert "details for event 600 unavailable" in capsys.readouterr().out
+def test_the_old_parent_feed_file_from_1_4_is_removed(monkeypatch, tmp_path):
+    for key, value in (("ICS_DIR", str(tmp_path)), ("AULA_MITID_USERNAME", "x"),
+                       ("HA_NOTIFY_SERVICE", "x"), ("STATE_DIR", str(tmp_path))):
+        monkeypatch.setenv(key, value)
+    (tmp_path / "parent.ics").write_text("stale")
+    monkeypatch.setattr(calendar_sync, "build_feeds", lambda *a, **k: {"anna.ics": ("Anna", [])})
+    calendar_sync.main()
+    assert not (tmp_path / "parent.ics").exists() and (tmp_path / "anna.ics").exists()
 
 
 def test_day_lines_are_cut_per_child(monkeypatch):
@@ -164,7 +200,8 @@ def test_combined_feed_without_a_school_child_labels_whose_event_it_is(monkeypat
     combined = titles(feeds, "skole.ics")
     assert "Anna: Børnehavens udflugt" in combined and "Ben: Skolefoto" in combined
     assert "Fælles tur" in combined                                 # belongs to both: no prefix
-    assert "Forældre: ❗ Juletræsfest" in combined and "Forældre: Forældremøde" in combined
+    assert "Anna: ❗ Juletræsfest" in combined and "Ben: Forældremøde" in combined
+    assert "❗ Pædagogisk dag" in combined                           # shown for both: no prefix
 
 
 def test_school_child_that_matches_nobody_falls_back_to_the_combined_feed(monkeypatch, capsys):
@@ -190,22 +227,6 @@ def test_each_child_is_fetched_with_their_own_profile_id(monkeypatch):
     assert {c[c.index("--institution-profile-id") + 1] for c in per_child} == {str(ANNA), str(BEN)}
 
 
-def test_the_parent_feed_exists_even_when_nothing_is_addressed_to_the_parent(monkeypatch):
-    only_children = [LESSON, OUTING, PHOTO, TRIP]
-    fake = make_fake()
-
-    def run(settings, *args):
-        if args[0] == "important-dates":
-            return []
-        out = fake(settings, *args)
-        return only_children if (args[0] == "calendar" and "--institution-profile-id" not in args
-                                 and "--event-id" not in args and out) else out
-
-    monkeypatch.setattr(calendar_sync, "run_aula", run)
-    feeds = build_feeds(None, TODAY, school_child="ben")
-    assert feeds["parent.ics"] == ("Forældre", [])        # an empty calendar can still be added in HA
-
-
 # --- describing an event ------------------------------------------------------
 
 KIDS = [Child(ANNA, "Anna Testesen", "Anna", "anna", KINDERGARTEN, "Børnehaven Stjernen"),
@@ -213,9 +234,10 @@ KIDS = [Child(ANNA, "Anna Testesen", "Anna", "anna", KINDERGARTEN, "Børnehaven 
 
 
 def test_description_works_with_nothing_but_the_calendar_row():
-    assert describe_parent_event(None, KIDS) == "Sendt til forældre i Aula – ikke til et af børnene."
+    base = "Sendt til forældre i Aula – ikke direkte til et af børnene."
+    assert describe_parent_event(None, KIDS) == base
     assert describe_parent_event({}, KIDS, event_type="parental_meeting", location="Lokale 4").splitlines() == [
-        "Sendt til forældre i Aula – ikke til et af børnene.", "Sted: Lokale 4", "Type: parental_meeting"]
+        base, "Sted: Lokale 4", "Type: parental_meeting"]
 
 
 def test_description_matches_the_institution_by_code_or_by_name():
@@ -258,7 +280,6 @@ REAL = {
 
 def test_description_reads_the_fields_aula_really_returns():
     text = describe_parent_event(REAL, KIDS)
-    assert "Dine børn i de inviterede grupper: Anna" in text            # unknown ids (999) are ignored
     assert "Inviterede grupper: Stuen, Kattegat" in text                 # both group fields, no repeats
     assert "Inviterede: Barn A, Barn B" in text                          # a name wrapped in a profile
     assert "Oprettet af: Pædagog Testesen" in text                       # `creator`, not `creatorName`
@@ -277,17 +298,24 @@ def test_the_creator_may_be_a_string_a_dict_or_a_wrapped_profile(creator):
     assert "Oprettet af: Pædagog Testesen" in describe_parent_event({"creator": creator}, KIDS)
 
 
-def test_home_children_may_be_plain_ids_and_only_your_children_are_named():
-    assert "Dine børn i de inviterede grupper: Anna og Ben" in describe_parent_event(
-        {"invitedGroupHomeChildren": [ANNA, BEN]}, KIDS)
-    assert "Dine børn" not in describe_parent_event({"invitedGroupHomeChildren": [999, "x", None]}, KIDS)
-    assert "Dine børn" not in describe_parent_event({"invitedGroupHomeChildren": []}, KIDS)
+def test_the_children_an_event_concerns_come_from_the_groups_first_then_the_institution():
+    assert [c.first for c in children_for_event({"invitedGroupHomeChildren": [ANNA, BEN]}, KIDS)[0]] == ["Anna", "Ben"]
+    assert children_for_event({"invitedGroupHomeChildren": [{"id": ANNA}]}, KIDS)[1] == "groups"
+    both = {"invitedGroupHomeChildren": [ANNA], "institutionCode": SCHOOL}               # groups win
+    assert [c.first for c in children_for_event(both, KIDS)[0]] == ["Anna"]
+    assert [c.first for c in children_for_event({"institutionCode": SCHOOL}, KIDS)[0]] == ["Ben"]
+    assert [c.first for c in children_for_event({"institutionName": "Børnehaven Stjernen"}, KIDS)[0]] == ["Anna"]
+    via_group = {"invitedGroups": [{"name": "Stuen", "institutionCode": KINDERGARTEN}]}
+    assert children_for_event(via_group, KIDS) == ([KIDS[0]], "institution")
+    for nothing in ({"invitedGroupHomeChildren": [999, "x", None]}, {"invitedGroupHomeChildren": []},
+                    {"institutionName": "Idrætsforeningen"}, {}, None, "not a dict"):    # settle nothing
+        assert children_for_event(nothing, KIDS) == ([], "")
 
 
 def test_empty_or_missing_fields_add_no_lines():
     text = describe_parent_event({"attachments": [], "coOrganizers": [], "invitees": None,
                                   "maximumNumberOfParticipants": 0, "responseRequired": False}, KIDS)
-    assert text == "Sendt til forældre i Aula – ikke til et af børnene."
+    assert text == "Sendt til forældre i Aula – ikke direkte til et af børnene."
 
 
 def test_a_passed_reply_deadline_and_open_participation_are_shown():
@@ -342,7 +370,7 @@ def test_days_from_weekly_summary_filters_by_child():
     assert sorted(merged.notes) == ["Anna - Matematik", "Ben - Dansk"]
 
 
-@pytest.mark.parametrize("path,ok", [("/anna.ics", True), ("/skole.ics", True), ("/parent.ics", True),
+@pytest.mark.parametrize("path,ok", [("/anna.ics", True), ("/skole.ics", True),
                                      ("/ben-2.ics", True), ("/state.json", False), ("/../state.json", False),
                                      ("/a/b.ics", False), ("/ANNA.ics", False), ("/anna.ics.tmp", False),
                                      ("/", False), ("/.ics", False)])

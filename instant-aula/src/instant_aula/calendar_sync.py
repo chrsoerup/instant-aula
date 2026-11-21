@@ -14,17 +14,20 @@ child (`aula calendar --institution-profile-id <child>`), so an event comes back
 for the child it belongs to; an event shared by both children comes back for
 both and appears in both feeds.
 
-Events Aula addresses to a parent (the guardian profile of the Aula login this app uses), and to no child (a party "for the whole
-family", a parents' meeting) are the third feed, `parent.ics`: the parents' calendar.
-Nothing is guessed about which child they concern. Instead each one gets a
-description with what Aula says about it -- institution (and which of your
-children goes there), invited groups, invitees, who created it, whether a reply is
-due, and Aula's own text -- so you can see who is invited.
+Events Aula addresses to a parent and to no child (a party "for the whole family",
+a parents' meeting) come back in no child's own fetch, but every event concerns a
+child, so each is placed in the right child's feed from what Aula says about it
+(`aula calendar --event-id`): first which of your children are in the invited
+groups (`invitedGroupHomeChildren`), then which child goes to the institution that
+sent it. If Aula's record doesn't settle it, the event is shown in every child's
+feed, and says so, rather than risk hiding it. Each such event's description says
+why it is where it is, and what Aula says about it -- institution, invited groups,
+invitees, who created it, whether a reply is due, Aula's own text.
 
 `skole.ics` is the original combined feed, kept so a calendar set up before the
 per-child feeds keeps working: with SCHOOL_FEED_CHILD set (part of a child's
 name) it is that child's feed; left empty it holds everything, each entry
-prefixed with the child's name (or "Forældre") unless it belongs to all children.
+prefixed with the child's name unless it belongs to all children.
 
 What is deliberately left out:
 
@@ -67,8 +70,7 @@ LOOKAHEAD_DAYS = 56  # eight weeks of school events
 CHUNK_DAYS = 14  # Aula's calendar endpoint is asked for at most two weeks at a time
 EXCLUDED_TYPES = frozenset({"lesson", "birthday", "school_home_meeting", "parental_meeting"})
 ICS_FILENAME = "skole.ics"
-PARENT_FILENAME = "parent.ics"
-PARENT_CALENDAR_NAME = "Forældre"
+LEGACY_PARENT_FILENAME = "parent.ics"  # 1.4.x wrote this; it is removed when found
 MAX_NAMES = 12  # invited people/groups listed in a description before "og N flere"
 CALENDAR_NAME = "Skole"
 
@@ -418,8 +420,39 @@ def _listed(names: list[str]) -> str:
     return ", ".join(names[:MAX_NAMES]) + (f" og {len(names) - MAX_NAMES} flere" if len(names) > MAX_NAMES else "")
 
 
+def _institution(raw: dict) -> tuple[str | None, str | None]:
+    """(name, code) of the institution an event belongs to, from the event or its groups."""
+    groups = [g for key in ("invitedGroups", "inviteeGroups") for g in raw.get(key) or [] if isinstance(g, dict)]
+    name = raw.get("institutionName") or next((g["institutionName"] for g in groups if g.get("institutionName")), None)
+    code = raw.get("institutionCode") or next((g["institutionCode"] for g in groups if g.get("institutionCode")), None)
+    return name, (str(code) if code else None)
+
+
+def _same_institution(child: Child, code: str | None, name: str | None) -> bool:
+    return bool((code and child.institution_code and code == child.institution_code)
+                or (name and child.institution_name and name == child.institution_name))
+
+
+def children_for_event(raw: dict | None, children: list[Child]) -> tuple[list[Child], str]:
+    """Which children an event addressed to the parent concerns, and how we know.
+
+    1. the children of yours that Aula lists among the invited groups' home children;
+    2. else the children at the institution the event belongs to.
+    Empty when Aula's record settles neither.
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    ids = raw.get("invitedGroupHomeChildren") or []
+    if mine := [c for c in children if any(_profile_id(i) == c.id for i in ids)]:
+        return mine, "groups"
+    name, code = _institution(raw)
+    if same := [c for c in children if _same_institution(c, code, name)]:
+        return same, "institution"
+    return [], ""
+
+
 def describe_parent_event(raw: dict | None, children: list[Child], event_type: str | None = None,
-                          location: str | None = None, important: bool = False) -> str:
+                          location: str | None = None, important: bool = False,
+                          why: str | None = None) -> str:
     """What Aula says about an event addressed to the parent, so you can see who is invited.
 
     `raw` is Aula's own record of the event (`aula calendar --event-id`); None when it
@@ -428,26 +461,16 @@ def describe_parent_event(raw: dict | None, children: list[Child], event_type: s
     in several shapes (see _name_of).
     """
     raw = raw if isinstance(raw, dict) else {}
-    lines = ["Sendt til forældre i Aula – ikke til et af børnene."]
+    lines = ["Sendt til forældre i Aula – ikke direkte til et af børnene."]
+    if why:
+        lines.append(why)
 
     groups = [g for key in ("invitedGroups", "inviteeGroups") for g in raw.get(key) or []]
-    group_dicts = [g for g in groups if isinstance(g, dict)]
-    inst_name = raw.get("institutionName") or next((g.get("institutionName") for g in group_dicts
-                                                    if g.get("institutionName")), None)
-    inst_code = raw.get("institutionCode") or next((g.get("institutionCode") for g in group_dicts
-                                                    if g.get("institutionCode")), None)
+    inst_name, inst_code = _institution(raw)
     if inst_name or inst_code:
-        same = [c.first for c in children
-                if (inst_code and c.institution_code and str(inst_code) == c.institution_code)
-                or (inst_name and c.institution_name and inst_name == c.institution_name)]
+        same = [c.first for c in children if _same_institution(c, inst_code, inst_name)]
         lines.append(f"Institution: {inst_name or inst_code}"
                      + (f" (samme institution som {' og '.join(same)})" if same else ""))
-
-    # Which of YOUR children are in the invited groups -- the direct answer to "who is it for".
-    mine = [c.first for c in children
-            if any(_profile_id(i) == c.id for i in raw.get("invitedGroupHomeChildren") or [])]
-    if mine:
-        lines.append(f"Dine børn i de inviterede grupper: {' og '.join(mine)}")
     if group_names := _names(groups):
         lines.append(f"Inviterede grupper: {_listed(group_names)}")
     if invitees := _names(raw.get("invitees") or raw.get("invitedProfiles") or raw.get("participants")):
@@ -525,29 +548,39 @@ def event_details(settings, event_id: int | None) -> dict | None:
     return None
 
 
-def parent_feed_events(settings, rows: list[dict], extra: list[dict], important_ids: set,
-                       children: list[Child]) -> list[dict]:
-    """Events addressed to the parent only, each described with what Aula says about it."""
-    out = []
+def place_parent_events(settings, rows: list[dict], extra: list[dict], important_ids: set,
+                        children: list[Child]) -> dict[int, list[dict]]:
+    """Put each event addressed to the parent in the feed of the child it concerns,
+    described with what Aula says about it. {child id: events}."""
+    placed: dict[int, list[dict]] = {c.id: [] for c in children}
+
+    def place(ev: dict, raw: dict | None, event_type=None, location=None, important=False) -> None:
+        kids, how = children_for_event(raw, children)
+        if kids:
+            names = " og ".join(c.first for c in kids)
+            why = (f"Vist hos {names}: {'barnet er' if len(kids) == 1 else 'børnene er'} i de inviterede grupper."
+                   if how == "groups" else f"Vist hos {names}: samme institution som invitationen.")
+        else:
+            kids = children
+            why = "Kunne ikke afgøre hvilket barn det gælder – vist hos alle børn."
+        ev = {**ev, "description": describe_parent_event(raw, children, event_type, location, important, why)}
+        for c in kids:
+            placed[c.id].append(ev)
+        print(f"calendar_sync: addressed to the parent: {ev['title']!r} -> {', '.join(c.first for c in kids)} "
+              f"({how or 'could not tell, shown for all'})")
+
     for r in rows:
         for ev in school_events([r], important_ids):
-            raw = event_details(settings, r["id"])
-            ev["description"] = describe_parent_event(raw, children, r.get("event_type"), r.get("location"),
-                                                      important=r["id"] in important_ids)
-            print(f"calendar_sync: parent calendar: {ev['title']!r} (type {r.get('event_type')}, "
-                  f"profiles {r.get('belongs_to_profiles')})")
-            out.append(ev)
+            place(ev, event_details(settings, r["id"]), r.get("event_type"), r.get("location"),
+                  r["id"] in important_ids)
     for ev in extra:  # important dates that are in no calendar window at all
-        raw = event_details(settings, _event_id(ev["uid"]))
-        out.append({**ev, "description": describe_parent_event(raw, children, important=True)})
-        print(f"calendar_sync: parent calendar: important date {ev['title']!r}")
-    return out
+        place(ev, event_details(settings, _event_id(ev["uid"])), important=True)
+    return placed
 
 
-def merge_for_everyone(children: list[Child], by_child: dict[int, list[dict]],
-                       parent: list[dict] | None = None) -> list[dict]:
+def merge_for_everyone(children: list[Child], by_child: dict[int, list[dict]]) -> list[dict]:
     """The combined feed: every child's events once, titled with the child's name
-    unless the event belongs to all of them; the parent's events titled "Forældre"."""
+    unless the event belongs to all of them."""
     owners: dict[str, list[str]] = {}
     first_seen: dict[str, dict] = {}
     for c in children:
@@ -560,7 +593,6 @@ def merge_for_everyone(children: list[Child], by_child: dict[int, list[dict]],
         if len(names) < len(children):
             ev = {**ev, "title": f"{' + '.join(names)}: {ev['title']}"}
         merged.append(ev)
-    merged += [{**ev, "title": f"{PARENT_CALENDAR_NAME}: {ev['title']}"} for ev in parent or []]
     return merged
 
 
@@ -599,21 +631,18 @@ def build_feeds(settings, today: datetime.date, school_child: str = "") -> dict[
     school = {c.id: school_events(per_child_rows[c.id], important_ids) for c in children}
     known = {ev["uid"] for evs in school.values() for ev in evs}
     known |= {f"aula-event-{r['id']}@instant-aula" for r in parent_rows}
-    parent = parent_feed_events(settings, parent_rows, important_date_events(important_rows, known),
-                                important_ids, children)
+    placed = place_parent_events(settings, parent_rows, important_date_events(important_rows, known),
+                                 important_ids, children)
 
     by_child: dict[int, list[dict]] = {}
     feeds: dict[str, tuple[str, list[dict]]] = {}
     for c in children:
         meetings = meeting_events([m for m in meeting_rows if m.get("child_id") == c.id], 1)
-        by_child[c.id] = school[c.id] + meetings + days[c.id]
+        by_child[c.id] = school[c.id] + placed[c.id] + meetings + days[c.id]
         feeds[f"{c.slug}.ics"] = (c.first, by_child[c.id])
-        shared = sum(1 for ev in school[c.id] if all(ev in school[o.id] for o in children))
-        print(f"calendar_sync: {c.first}: {len(by_child[c.id])} events ({len(school[c.id])} school "
-              f"events of which {shared} shared with every child, {len(meetings)} meetings, "
+        print(f"calendar_sync: {c.first}: {len(by_child[c.id])} events ({len(school[c.id])} school events, "
+              f"{len(placed[c.id])} addressed to the parent, {len(meetings)} meetings, "
               f"{len(days[c.id])} day lines)")
-    feeds[PARENT_FILENAME] = (PARENT_CALENDAR_NAME, parent)
-    print(f"calendar_sync: parent: {len(parent)} events addressed to you, not to a child")
 
     chosen = [c for c in children if school_child and school_child.lower() in c.name.lower()]
     if len(chosen) == 1:
@@ -622,7 +651,7 @@ def build_feeds(settings, today: datetime.date, school_child: str = "") -> dict[
         if school_child:
             print(f"calendar_sync: SCHOOL_FEED_CHILD={school_child!r} matches {len(chosen)} children; "
                   f"{ICS_FILENAME} holds everyone's events")
-        feeds[ICS_FILENAME] = (CALENDAR_NAME, merge_for_everyone(children, by_child, parent))
+        feeds[ICS_FILENAME] = (CALENDAR_NAME, merge_for_everyone(children, by_child))
     return feeds
 
 def main() -> int:
@@ -635,6 +664,11 @@ def main() -> int:
         path = ics_dir() / filename
         write_atomically(path, render_ics(events, calendar_name=name))
         print(f"calendar_sync: wrote {path} ({len(events)} events) -> http://{host}:{port}/{filename}")
+
+    legacy = ics_dir() / LEGACY_PARENT_FILENAME
+    if legacy.exists():  # 1.4.x wrote it; it would otherwise be served, stale, forever
+        legacy.unlink()
+        print(f"calendar_sync: removed the old {LEGACY_PARENT_FILENAME} (parent events are in the children's feeds now)")
 
     entity = os.environ.get("HA_CALENDAR_ENTITY", "").strip()
     if entity:
