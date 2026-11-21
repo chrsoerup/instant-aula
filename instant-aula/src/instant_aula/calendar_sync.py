@@ -371,15 +371,47 @@ def _plain(value) -> str:
     return strip_html(value) if isinstance(value, str) else ""
 
 
-def _names(items, *keys: str) -> list[str]:
-    """Names out of a list of strings or dicts (first of `keys` present), in order, no repeats."""
+_NAME_KEYS = ("fullName", "displayName", "name", "groupName", "shortName", "aulaName")
+_NESTED_KEYS = ("institutionProfile", "profile", "child", "user", "person")
+_ID_KEYS = ("id", "instProfileId", "institutionProfileId", "childInstitutionProfileId")
+
+
+def _name_of(item, depth: int = 0) -> str:
+    """A person's or group's name out of whatever shape Aula uses: a string, a dict with
+    a name field, or a dict wrapping one (a profile around a person)."""
+    if isinstance(item, str):
+        return item.strip()
+    if not isinstance(item, dict) or depth > 2:
+        return ""
+    for key in _NAME_KEYS:
+        if isinstance(item.get(key), str) and item[key].strip():
+            return item[key].strip()
+    first = item.get("firstName")
+    if isinstance(first, str) and first.strip():
+        return f"{first} {item.get('lastName') or ''}".strip()
+    for key in _NESTED_KEYS:
+        if isinstance(item.get(key), dict) and (name := _name_of(item[key], depth + 1)):
+            return name
+    return ""
+
+
+def _names(*lists) -> list[str]:
+    """Names out of one or more lists (or single values), in order, no repeats."""
     out: list[str] = []
-    for item in items or []:
-        name = item if isinstance(item, str) else next(
-            (item[k] for k in keys if isinstance(item, dict) and item.get(k)), "")
-        if isinstance(name, str) and name.strip() and name.strip() not in out:
-            out.append(name.strip())
+    for value in lists:
+        for item in value if isinstance(value, list) else [value]:
+            name = _name_of(item)
+            if name and name not in out:
+                out.append(name)
     return out
+
+
+def _profile_id(item) -> int | None:
+    if isinstance(item, int) and not isinstance(item, bool):
+        return item
+    if isinstance(item, dict):
+        return next((item[k] for k in _ID_KEYS if isinstance(item.get(k), int)), None)
+    return None
 
 
 def _listed(names: list[str]) -> str:
@@ -392,15 +424,17 @@ def describe_parent_event(raw: dict | None, children: list[Child], event_type: s
 
     `raw` is Aula's own record of the event (`aula calendar --event-id`); None when it
     couldn't be fetched, in which case only what the calendar row itself says is used.
-    Every field is optional: Aula's records differ by institution.
+    Every field is optional: Aula's records differ by institution, and the lists are read
+    in several shapes (see _name_of).
     """
     raw = raw if isinstance(raw, dict) else {}
     lines = ["Sendt til forældre i Aula – ikke til et af børnene."]
 
-    groups = [g for g in raw.get("invitedGroups") or [] if isinstance(g, dict)]
-    inst_name = raw.get("institutionName") or next((g.get("institutionName") for g in groups
+    groups = [g for key in ("invitedGroups", "inviteeGroups") for g in raw.get(key) or []]
+    group_dicts = [g for g in groups if isinstance(g, dict)]
+    inst_name = raw.get("institutionName") or next((g.get("institutionName") for g in group_dicts
                                                     if g.get("institutionName")), None)
-    inst_code = raw.get("institutionCode") or next((g.get("institutionCode") for g in groups
+    inst_code = raw.get("institutionCode") or next((g.get("institutionCode") for g in group_dicts
                                                     if g.get("institutionCode")), None)
     if inst_name or inst_code:
         same = [c.first for c in children
@@ -409,22 +443,42 @@ def describe_parent_event(raw: dict | None, children: list[Child], event_type: s
         lines.append(f"Institution: {inst_name or inst_code}"
                      + (f" (samme institution som {' og '.join(same)})" if same else ""))
 
-    if group_names := _names(groups, "name", "shortName", "groupName"):
+    # Which of YOUR children are in the invited groups -- the direct answer to "who is it for".
+    mine = [c.first for c in children
+            if any(_profile_id(i) == c.id for i in raw.get("invitedGroupHomeChildren") or [])]
+    if mine:
+        lines.append(f"Dine børn i de inviterede grupper: {' og '.join(mine)}")
+    if group_names := _names(groups):
         lines.append(f"Inviterede grupper: {_listed(group_names)}")
-    invitees = _names(raw.get("invitees") or raw.get("invitedProfiles") or raw.get("participants"),
-                      "displayName", "name", "fullName")
-    if invitees:
+    if invitees := _names(raw.get("invitees") or raw.get("invitedProfiles") or raw.get("participants")):
         lines.append(f"Inviterede: {_listed(invitees)}")
-    if creator := raw.get("creatorName") or raw.get("creatorAulaName"):
+
+    creator = raw.get("creatorName") or raw.get("creatorAulaName") or _name_of(raw.get("creator"))
+    if creator:
         lines.append(f"Oprettet af: {creator}")
-    place = location or (raw.get("primaryResource") or {}).get("name") or raw.get("primaryResourceText")
+    if co_organizers := _names(raw.get("coOrganizers")):
+        lines.append(f"Medarrangører: {_listed(co_organizers)}")
+
+    place = location or _name_of(raw.get("primaryResource")) or raw.get("primaryResourceText")
     if place:
         lines.append(f"Sted: {place}")
+
     if raw.get("responseRequired"):
         deadline = raw.get("responseDeadline")
         lines.append("Svar kræves" + (f" senest {str(deadline)[:10]}" if deadline else "")
+                     + (" (fristen er overskredet)" if raw.get("isDeadlineExceeded") else "")
                      + (f" (status: {raw['responseStatus']})" if raw.get("responseStatus") else ""))
-    if raw.get("hasAttachments"):
+    wanted, signed_up = raw.get("maximumNumberOfParticipants"), raw.get("actualNumberOfParticipants")
+    if isinstance(wanted, int) and wanted > 0:
+        lines.append(f"Tilmeldte: {signed_up if isinstance(signed_up, int) else 0} af højst {wanted}")
+    elif raw.get("doRequestNumberOfParticipants") and isinstance(signed_up, int):
+        lines.append(f"Tilmeldte: {signed_up}")
+
+    attachments = raw.get("attachments")
+    if isinstance(attachments, list) and attachments:
+        names = _names(attachments)
+        lines.append(f"Vedhæftede filer: {_listed(names)}" if names else "Har vedhæftede filer – se Aula.")
+    elif raw.get("hasAttachments"):
         lines.append("Har vedhæftede filer – se Aula.")
     if important:
         lines.append("Står på Aulas liste over vigtige datoer.")
@@ -440,6 +494,19 @@ def _event_id(uid: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+_SHAPE_FIELDS = ("creator", "coOrganizers", "invitees", "invitedGroups", "inviteeGroups",
+                 "invitedGroupHomeChildren", "attachments", "description", "primaryResource")
+
+
+def _shape(value) -> str:
+    """The structure of a value, never its content: type, list length, field names."""
+    if isinstance(value, dict):
+        return "{" + ",".join(sorted(value))[:120] + "}"
+    if isinstance(value, list):
+        return f"list[{len(value)}]" + (_shape(value[0]) if value else "")
+    return type(value).__name__
+
+
 def event_details(settings, event_id: int | None) -> dict | None:
     """Aula's own record of one event, or None (logged) if it can't be fetched."""
     if event_id is None:
@@ -451,6 +518,9 @@ def event_details(settings, event_id: int | None) -> dict | None:
         return None
     if isinstance(raw, dict):
         print(f"calendar_sync: event {event_id} details from Aula, fields: {', '.join(sorted(raw))}")
+        shapes = {k: _shape(raw[k]) for k in _SHAPE_FIELDS if raw.get(k) not in (None, [], {}, "")}
+        print(f"calendar_sync: event {event_id} shapes (names only, no values): "
+              + (", ".join(f"{k}={v}" for k, v in shapes.items()) or "none of the people/group fields are set"))
         return raw
     return None
 

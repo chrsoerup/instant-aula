@@ -132,9 +132,10 @@ Aula answers that itself: the calendar is fetched once per child (`aula calendar
 Some events Aula doesn't send to a child at all, but to the parent — a party "for the whole family", a parents' meeting. Nothing in Aula's calendar says which child those concern, so nothing is guessed. They go to a calendar of their own, **`parent.ics`** (calendar name "Forældre"), and each one gets a description with what Aula says about it, so you can see who is invited:
 
 - **Institution**, and which of your children goes there when the institution matches (`Institution: Børnehaven Stjernen (samme institution som Anna)`).
-- **Invited groups** and **invitees**, who **created** it, the **place**, whether a **reply is due** (and by when), attachments, whether it is on Aula's list of **important dates**, and Aula's own **text**.
+- **Which of your children are in the invited groups** (`Dine børn i de inviterede grupper: Anna`) — the direct answer to "who is this for", read from Aula's own list of the guardian's children in the invited groups.
+- **Invited groups** and **invitees**, who **created** it and any **co-organizers**, the **place**, whether a **reply is due** (and by when, and if the deadline has passed), how many have **signed up** of the maximum, **attachments** by name, whether it is on Aula's list of **important dates**, and Aula's own **text**.
 
-The details come from one extra lookup per such event (`aula calendar --event-id`). If a lookup fails, the event is still published with what the calendar row itself says. The Log prints which fields Aula returned for each one.
+The details come from one extra lookup per such event (`aula calendar --event-id`). If a lookup fails, the event is still published with what the calendar row itself says. The Log prints which fields Aula returned and the *structure* of the people and group fields (field names only — never names or text), so a missing line in a description can be traced to the shape Aula used.
 
 "The parent" is the guardian profile of the Aula login this app uses. Aula normally sends an invitation to every guardian of the child, so the other parent's login sees the same events; something addressed to that other parent alone would not appear here. Important dates that fall outside both children's calendars go to the parent calendar too.
 

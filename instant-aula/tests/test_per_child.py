@@ -239,6 +239,75 @@ def test_description_text_may_be_a_plain_string_or_html_and_long_invitee_lists_a
     assert "Barn 0" in many and "Barn 11" in many and "Barn 12" not in many and "og 3 flere" in many
 
 
+# --- the fields Aula really returns (names taken from a live record) ---------
+
+REAL = {
+    "creator": {"name": "Pædagog Testesen", "profileId": 1},
+    "coOrganizers": [{"name": "Hjælper Hansen"}, "Praktikant Pedersen"],
+    "institutionName": "Børnehaven Stjernen", "institutionCode": KINDERGARTEN,
+    "invitedGroups": [{"name": "Stuen"}], "inviteeGroups": [{"name": "Stuen"}, {"name": "Kattegat"}],
+    "invitedGroupHomeChildren": [{"id": ANNA}, {"id": 999}],
+    "invitees": [{"displayName": "Barn A"}, {"institutionProfile": {"name": "Barn B"}}],
+    "attachments": [{"name": "invitation.pdf"}, {"name": "program.pdf"}],
+    "responseRequired": True, "responseDeadline": "2026-11-27T12:00:00+01:00", "isDeadlineExceeded": False,
+    "doRequestNumberOfParticipants": True, "maximumNumberOfParticipants": 40, "actualNumberOfParticipants": 17,
+    "primaryResource": {"id": 5, "name": "Fællesrummet"},
+    "description": {"html": "<p>Kom og vær med.</p>"},
+}
+
+
+def test_description_reads_the_fields_aula_really_returns():
+    text = describe_parent_event(REAL, KIDS)
+    assert "Dine børn i de inviterede grupper: Anna" in text            # unknown ids (999) are ignored
+    assert "Inviterede grupper: Stuen, Kattegat" in text                 # both group fields, no repeats
+    assert "Inviterede: Barn A, Barn B" in text                          # a name wrapped in a profile
+    assert "Oprettet af: Pædagog Testesen" in text                       # `creator`, not `creatorName`
+    assert "Medarrangører: Hjælper Hansen, Praktikant Pedersen" in text
+    assert "Sted: Fællesrummet" in text
+    assert "Svar kræves senest 2026-11-27" in text and "overskredet" not in text
+    assert "Tilmeldte: 17 af højst 40" in text
+    assert "Vedhæftede filer: invitation.pdf, program.pdf" in text
+    assert text.endswith("Kom og vær med.")
+
+
+@pytest.mark.parametrize("creator", ["Pædagog Testesen", {"fullName": "Pædagog Testesen"},
+                                     {"institutionProfile": {"name": "Pædagog Testesen"}},
+                                     {"firstName": "Pædagog", "lastName": "Testesen"}])
+def test_the_creator_may_be_a_string_a_dict_or_a_wrapped_profile(creator):
+    assert "Oprettet af: Pædagog Testesen" in describe_parent_event({"creator": creator}, KIDS)
+
+
+def test_home_children_may_be_plain_ids_and_only_your_children_are_named():
+    assert "Dine børn i de inviterede grupper: Anna og Ben" in describe_parent_event(
+        {"invitedGroupHomeChildren": [ANNA, BEN]}, KIDS)
+    assert "Dine børn" not in describe_parent_event({"invitedGroupHomeChildren": [999, "x", None]}, KIDS)
+    assert "Dine børn" not in describe_parent_event({"invitedGroupHomeChildren": []}, KIDS)
+
+
+def test_empty_or_missing_fields_add_no_lines():
+    text = describe_parent_event({"attachments": [], "coOrganizers": [], "invitees": None,
+                                  "maximumNumberOfParticipants": 0, "responseRequired": False}, KIDS)
+    assert text == "Sendt til forældre i Aula – ikke til et af børnene."
+
+
+def test_a_passed_reply_deadline_and_open_participation_are_shown():
+    text = describe_parent_event({"responseRequired": True, "responseDeadline": "2026-11-20T12:00:00+01:00",
+                                  "isDeadlineExceeded": True, "doRequestNumberOfParticipants": True,
+                                  "actualNumberOfParticipants": 9}, KIDS)
+    assert "Svar kræves senest 2026-11-20 (fristen er overskredet)" in text and "Tilmeldte: 9" in text
+
+
+def test_the_log_shows_the_structure_of_the_fields_but_never_names_or_text(monkeypatch, capsys):
+    from instant_aula.calendar_sync import event_details
+    monkeypatch.setattr(calendar_sync, "run_aula", lambda settings, *a: REAL)
+    event_details(None, 600)
+    out = capsys.readouterr().out
+    assert "shapes (names only, no values)" in out and "creator={name,profileId}" in out
+    assert "invitees=list[2]{displayName}" in out and "invitedGroupHomeChildren=list[2]{id}" in out
+    for private in ("Pædagog Testesen", "Barn A", "Hjælper Hansen", "Kom og vær med", "invitation.pdf"):
+        assert private not in out
+
+
 # --- helpers ------------------------------------------------------------------
 
 
