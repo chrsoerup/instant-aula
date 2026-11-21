@@ -11,8 +11,8 @@ import datetime
 import pytest
 
 from instant_aula import calendar_sync, day_summary
-from instant_aula.calendar_sync import (Child, build_feeds, owner_of, parse_children, parse_owner_rules,
-                                        slugify)
+from instant_aula.calendar_sync import (Child, build_feeds, owners_of, parse_children, parse_owner_rules,
+                                        rule_problems, slugify)
 from instant_aula.ics_server import FEED_PATH
 
 TODAY = datetime.date(2026, 11, 18)
@@ -43,8 +43,9 @@ SUMMARY = {
 }
 
 
-def make_fake(profile=None, fail_profile=False):
+def make_fake(profile=None, fail_profile=False, rows=None):
     calls = []
+    per_child = rows or ROWS
 
     def fake(settings, *args):
         calls.append(args)
@@ -58,7 +59,7 @@ def make_fake(profile=None, fail_profile=False):
             if args[args.index("--start-date") + 1] != f"{TODAY:%Y-%m-%d}":
                 return []                              # only the first 14-day chunk has events
             ids = [int(args[i + 1]) for i, a in enumerate(args) if a == "--institution-profile-id"]
-            return COMBINED if not ids else [r for i in ids for r in ROWS[i]]
+            return COMBINED if not ids else [r for i in ids for r in per_child[i]]
         if cmd == "important-dates":
             return [{"id": 100, "title": "Juletræsfest"},
                     {"id": 500, "title": "Pædagogisk dag", "startDateTime": "2026-12-10T00:00:00+01:00",
@@ -189,18 +190,21 @@ def test_feed_server_only_serves_ics_files_in_the_feed_directory(path, ok):
     assert bool(FEED_PATH.fullmatch(path)) is ok
 
 
-# --- event_owners: a rule for events Aula does not attribute -----------------
+# --- event_owners: rules that place events -----------------------------------
+
+KIDS = [Child(ANNA, "Anna Testesen", "Anna", "anna"), Child(BEN, "Ben Testesen", "Ben", "ben")]
 
 
 def test_owner_rules_parse_and_match():
-    rules = parse_owner_rules("julefest=ben, Forældremøde = Anna ;; broken, =x, y=")
-    assert rules == [("julefest", "ben"), ("forældremøde", "anna")]
-    kids = [Child(ANNA, "Anna Testesen", "Anna", "anna"), Child(BEN, "Ben Testesen", "Ben", "ben")]
-    assert owner_of("🎄 Julefest 🎄", rules, kids).first == "Ben"
-    assert owner_of("Forældremøde 3.A", rules, kids).first == "Anna"
-    assert owner_of("Skolefoto", rules, kids) is None
-    assert owner_of("Julefest", [("julefest", "zoe")], kids) is None            # names nobody
-    assert owner_of("Julefest", [("julefest", "testesen")], kids) is None       # names both
+    rules = parse_owner_rules("julefest=ben, Forældremøde = Anna ;; tur=ben+anna, broken, =x, y=")
+    assert rules == [("julefest", ["ben"]), ("forældremøde", ["anna"]), ("tur", ["ben", "anna"])]
+    assert [c.first for c in owners_of("🎄 Julefest 🎄", rules, KIDS)] == ["Ben"]
+    assert [c.first for c in owners_of("Forældremøde 3.A", rules, KIDS)] == ["Anna"]
+    assert [c.first for c in owners_of("Skovtur", rules, KIDS)] == ["Ben", "Anna"]       # several children
+    assert owners_of("Skolefoto", rules, KIDS) == []
+    assert owners_of("Julefest", [("julefest", ["zoe"])], KIDS) == []                    # names nobody
+    assert owners_of("Julefest", [("julefest", ["testesen"])], KIDS) == []               # names both
+    assert len(rule_problems([("a", ["zoe", "ben"]), ("b", ["testesen"])], KIDS)) == 2
 
 
 def test_a_rule_assigns_an_unattributed_event_to_one_child_only(monkeypatch, capsys):
@@ -212,12 +216,32 @@ def test_a_rule_assigns_an_unattributed_event_to_one_child_only(monkeypatch, cap
     assert "-> Anna (event_owners rule)" in capsys.readouterr().out
 
 
-def test_a_rule_never_overrides_what_aula_attributes(monkeypatch):
+def test_a_rule_can_name_several_children(monkeypatch):
     monkeypatch.setattr(calendar_sync, "run_aula", make_fake())
-    # Aula says the party is Anna's (it comes back in her own fetch); the rule says Ben
+    feeds = build_feeds(None, TODAY, school_child="ben", event_owners="forældremøde=anna+ben")
+    assert "Forældremøde" in titles(feeds, "anna.ics") and "Forældremøde" in titles(feeds, "ben.ics")
+
+
+def test_a_rule_adds_to_what_aula_attributes_and_never_removes_it(monkeypatch, capsys):
+    monkeypatch.setattr(calendar_sync, "run_aula", make_fake())
+    # Aula says the party is Anna's (it comes back in her own fetch); the rule also names Ben
     feeds = build_feeds(None, TODAY, school_child="ben", event_owners="juletræsfest=ben")
-    assert "❗ Juletræsfest" in titles(feeds, "anna.ics")
-    assert "❗ Juletræsfest" not in titles(feeds, "ben.ics")
+    assert "❗ Juletræsfest" in titles(feeds, "anna.ics")        # Aula's answer stays
+    assert "❗ Juletræsfest" in titles(feeds, "ben.ics")         # and the rule adds Ben
+    assert "also added to Ben by an event_owners rule" in capsys.readouterr().out
+
+
+def test_the_rule_child_keeps_the_event_when_aula_later_attributes_it_to_the_sibling(monkeypatch):
+    """The party is Anna's. If Aula starts listing it for Ben too (he is invited), it must
+    not disappear from Anna's calendar because Aula now 'attributes' it."""
+    rows = {ANNA: [TRIP], BEN: [LESSON, PHOTO, TRIP, PARTY]}      # party now returned for Ben only
+    monkeypatch.setattr(calendar_sync, "run_aula", make_fake(rows=rows))
+    feeds = build_feeds(None, TODAY, school_child="ben", event_owners="juletræsfest=anna")
+    assert "❗ Juletræsfest" in titles(feeds, "anna.ics")        # the rule keeps it with Anna
+    assert "❗ Juletræsfest" in titles(feeds, "ben.ics")         # Aula's new answer: Ben is invited
+    # without the rule the party would have moved to Ben alone
+    feeds = build_feeds(None, TODAY, school_child="ben")
+    assert "❗ Juletræsfest" not in titles(feeds, "anna.ics")
 
 
 def test_a_rule_also_places_important_dates_found_in_no_calendar(monkeypatch):
@@ -231,4 +255,4 @@ def test_a_rule_that_names_no_child_is_ignored_and_reported(monkeypatch, capsys)
     monkeypatch.setattr(calendar_sync, "run_aula", make_fake())
     feeds = build_feeds(None, TODAY, school_child="ben", event_owners="forældremøde=zoe")
     assert "Forældremøde" in titles(feeds, "anna.ics") and "Forældremøde" in titles(feeds, "ben.ics")
-    assert "matches 0 children -- rule ignored" in capsys.readouterr().out
+    assert "matches 0 children -- that name is ignored" in capsys.readouterr().out

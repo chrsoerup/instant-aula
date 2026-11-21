@@ -129,7 +129,15 @@ Aula answers that itself: the calendar is fetched once per child (`aula calendar
 
 Two cases Aula doesn't attribute — events addressed only to the parents' own profiles (a kindergarten party "for the whole family" can be one), and important dates that fall outside both children's calendars. Each is named in the Log (`not attributed by Aula: '…' (type …, profiles […], children […]) -> …`, `important date found in no child's calendar: '…' -> …`), and unless a rule claims it, shown in **every** child's feed rather than risk hiding it.
 
-**Fixing one with a rule:** the **`event_owners`** option takes `word in the title=part of the child's name`, comma separated — for example `julefest=ben, forældremøde=anna`. An unattributed event whose title contains the word goes to that child's feed only (the Log line then ends `-> Ben (event_owners rule)`). Matching ignores case. A rule never overrides what Aula itself attributes, and a rule naming nobody, or both children, is ignored and reported. The `profiles […]` and `children […]` in the Log line show what Aula said, which is what to look at if a general rule is ever worth building: that needs to know which institution each of your own profiles belongs to, which the `aula` command line doesn't report.
+**Fixing one with a rule:** the **`event_owners`** option takes `word in the title=part of the child's name`, comma separated — for example `julefest=ben, forældremøde=anna`. Join several children with `+` (`julefest=ben+anna`) when an event is for more than one. Matching ignores case.
+
+- A rule **adds** the event to the named children's feeds, whatever Aula says, and never removes anything Aula attributes. If Aula later also lists the event for a sibling (they are invited), both children have it; without the rule it would have moved to the sibling alone.
+- An event Aula doesn't attribute, and that a rule names, goes only to the named children instead of everyone (the Log line ends `-> Ben (event_owners rule)`).
+- A name that matches no child, or both, is skipped and reported in the Log.
+
+If a sibling is invited informally — something Aula doesn't know — name both children in the rule (`julefest=ben+anna`).
+
+The `profiles […]` and `children […]` in the Log line show what Aula said, which is what to look at if a general rule is ever worth building: that needs to know which institution each of your own profiles belongs to, which the `aula` command line doesn't report.
 
 ### Setup, per child
 

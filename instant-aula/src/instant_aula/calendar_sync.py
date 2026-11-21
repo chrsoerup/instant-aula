@@ -14,9 +14,11 @@ child (`aula calendar --institution-profile-id <child>`), so an event comes back
 for the child it belongs to; an event shared by both children comes back for
 both and appears in both feeds. Events that only show up in the combined fetch
 (addressed to the parents' own profiles) can't be attributed by Aula. A rule you
-write (EVENT_OWNERS, e.g. "julefest=ben") can assign such an event to one child by
-a word in its title; Aula's own answer is never overridden. What no rule claims is
-put in every child's feed, and logged, rather than risk hiding it.
+write (EVENT_OWNERS, e.g. "julefest=ben" or "julefest=ben+anna") names the child or
+children an event belongs to by a word in its title. A rule ADDS the event to those
+children's feeds whatever Aula says (it never removes what Aula attributes), and an
+event Aula doesn't attribute then goes only to them. What no rule claims is put in
+every child's feed, and logged, rather than risk hiding it.
 
 `skole.ics` is the original combined feed, kept so a calendar set up before the
 per-child feeds keeps working: with SCHOOL_FEED_CHILD set (part of a child's
@@ -282,28 +284,41 @@ def parse_children(profile: dict) -> list[Child]:
     return children
 
 
-def parse_owner_rules(text: str) -> list[tuple[str, str]]:
-    """'julefest=ben, forældremøde=anna' -> [('julefest', 'ben'), ('forældremøde', 'anna')].
+def parse_owner_rules(text: str) -> list[tuple[str, list[str]]]:
+    """'julefest=ben+anna, forældremøde=anna' -> [('julefest', ['ben', 'anna']), ('forældremøde', ['anna'])].
 
-    Keyword: a word in the event title. Child: part of the child's name. Both are
-    matched ignoring case. Separate rules with commas, semicolons or new lines.
+    Keyword: a word in the event title. Children: parts of their names, joined with +.
+    Both are matched ignoring case. Separate rules with commas, semicolons or new lines.
     """
     rules = []
     for part in re.split(r"[,;\n]", text or ""):
         keyword, sep, who = part.partition("=")
-        if sep and keyword.strip() and who.strip():
-            rules.append((keyword.strip().casefold(), who.strip().casefold()))
+        names = [n.strip().casefold() for n in who.split("+") if n.strip()]
+        if sep and keyword.strip() and names:
+            rules.append((keyword.strip().casefold(), names))
     return rules
 
 
-def owner_of(title: str | None, rules: list[tuple[str, str]], children: list[Child]) -> Child | None:
-    """The child the first matching rule assigns this title to, if that names exactly one child."""
+def owners_of(title: str | None, rules: list[tuple[str, list[str]]], children: list[Child]) -> list[Child]:
+    """The children the first matching rule names. A name that matches no child, or
+    several, is skipped (rule_problems reports it)."""
     low = (title or "").casefold()
-    for keyword, who in rules:
+    for keyword, names in rules:
         if keyword in low:
-            named = [c for c in children if who in c.name.casefold()]
-            return named[0] if len(named) == 1 else None
-    return None
+            owners: list[Child] = []
+            for name in names:
+                named = [c for c in children if name in c.name.casefold()]
+                if len(named) == 1 and named[0] not in owners:
+                    owners.append(named[0])
+            return owners
+    return []
+
+
+def rule_problems(rules: list[tuple[str, list[str]]], children: list[Child]) -> list[str]:
+    return [f"event_owners names {name!r} (rule {kw!r}), which matches "
+            f"{len([c for c in children if name in c.name.casefold()])} children -- that name is ignored"
+            for kw, names in rules for name in names
+            if len([c for c in children if name in c.name.casefold()]) != 1]
 
 
 def load_children(settings) -> list[Child]:
@@ -425,29 +440,42 @@ def build_feeds(settings, today: datetime.date, school_child: str = "",
     unattributed = [r for r in combined_rows if r.get("id") is not None and r["id"] not in attributed
                     and (r.get("event_type") or "").lower() not in EXCLUDED_TYPES]
     child_ids = [c.id for c in children]
-    claimed: dict[int, list[dict]] = {c.id: [] for c in children}   # unattributed, claimed by a rule
+    claimed: dict[int, list[dict]] = {c.id: [] for c in children}   # added by an event_owners rule
     for_everyone: list[dict] = []
-    for r in unattributed:
-        owner = owner_of(r.get("title"), rules, children)
-        (claimed[owner.id] if owner else for_everyone).append(r)
-        print(f"calendar_sync: not attributed by Aula: {r.get('title')!r} (type {r.get('event_type')}, "
-              f"profiles {r.get('belongs_to_profiles')}, children {child_ids}) -> "
-              + (f"{owner.first} (event_owners rule)" if owner else "shown for everyone"))
+    seen_ids: set = set()
+    for r in combined_rows:
+        if r.get("id") is None or r["id"] in seen_ids or (r.get("event_type") or "").lower() in EXCLUDED_TYPES:
+            continue
+        seen_ids.add(r["id"])
+        owners = owners_of(r.get("title"), rules, children)
+        for o in owners:
+            claimed[o.id].append(r)
+        if r["id"] not in attributed:
+            if not owners:
+                for_everyone.append(r)
+            print(f"calendar_sync: not attributed by Aula: {r.get('title')!r} (type {r.get('event_type')}, "
+                  f"profiles {r.get('belongs_to_profiles')}, children {child_ids}) -> "
+                  + (f"{' + '.join(o.first for o in owners)} (event_owners rule)" if owners
+                     else "shown for everyone"))
+        elif owners:
+            print(f"calendar_sync: {r.get('title')!r} is also added to "
+                  f"{' + '.join(o.first for o in owners)} by an event_owners rule (Aula attributes it too)")
     school = {c.id: school_events(per_child_rows[c.id] + claimed[c.id] + for_everyone, important_ids)
               for c in children}
     known = {ev["uid"] for evs in school.values() for ev in evs}
     extra_claimed: dict[int, list[dict]] = {c.id: [] for c in children}
     extra_for_everyone: list[dict] = []
     for e in important_date_events(important_rows, known):
-        owner = owner_of(e["title"], rules, children)
-        (extra_claimed[owner.id] if owner else extra_for_everyone).append(e)
+        owners = owners_of(e["title"], rules, children)
+        for o in owners:
+            extra_claimed[o.id].append(e)
+        if not owners:
+            extra_for_everyone.append(e)
         print(f"calendar_sync: important date found in no child's calendar: {e['title']!r} -> "
-              + (f"{owner.first} (event_owners rule)" if owner else "shown for everyone"))
-    for _kw, who in rules:
-        if not [c for c in children if who in c.name.casefold()] or \
-                len([c for c in children if who in c.name.casefold()]) > 1:
-            print(f"calendar_sync: event_owners names {who!r}, which matches "
-                  f"{len([c for c in children if who in c.name.casefold()])} children -- rule ignored")
+              + (f"{' + '.join(o.first for o in owners)} (event_owners rule)" if owners
+                 else "shown for everyone"))
+    for problem in rule_problems(rules, children):
+        print(f"calendar_sync: {problem}")
 
     by_child: dict[int, list[dict]] = {}
     feeds: dict[str, tuple[str, list[dict]]] = {}
