@@ -138,7 +138,8 @@ Some events Aula doesn't send to a child at all, but to the parent — a party "
 Each such event's description says why it is where it is (`Vist hos Anna: barnet er i de inviterede grupper.`) and what Aula says about it, so you can see who is invited:
 
 - **Institution**, and which of your children goes there (`Institution: Børnehaven Stjernen (samme institution som Anna)`).
-- **Invited groups** and **invitees**, who **created** it and any **co-organizers**, the **place**, whether a **reply is due** (and by when, and if the deadline has passed), how many have **signed up** of the maximum, **attachments** by name, whether it is on Aula's list of **important dates**, and Aula's own **text**.
+- **Invited groups** (with the roles invited: parents, children, staff), and the **invitees**: a short guest list by name, a long one (a whole institution) as a count, with the **replies so far** (`31 ja, 12 nej, 167 mangler svar`) and **your own reply** (`Dit svar: mangler svar (2 voksne, 1 barn)`), found by your guardian profile.
+- Who **created** it and any **co-organizers**, the **place**, whether a **reply is due** (and by when, and if the deadline has passed), how many have **signed up** of the maximum, **attachments** by name, whether it is on Aula's list of **important dates**, and Aula's own **text**.
 
 If a lookup fails, the event is still published with what the calendar row itself says. The Log names each such event and where it went (`addressed to the parent: '…' -> Anna (groups)`), prints which fields Aula returned, and the *structure* of the people and group fields (field names only — never names or text), so a wrong placement can be traced.
 
