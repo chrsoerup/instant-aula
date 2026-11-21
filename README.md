@@ -112,7 +112,7 @@ Markers are written after each attempt whether it succeeded or failed, so a brok
 
 ## School calendar
 
-`calendar_sync` (every 6 hours) writes one feed per child with the next eight weeks of school events — `anna.ics`, `ben.ics`, named after the child's first name — plus the original `skole.ics`. `ics_server` serves them on the app's internal network. Home Assistant reads each one with its built-in **Remote calendar** integration, so every child appears as a calendar of their own (own colour on the family dashboard, the Calendar page, automations).
+`calendar_sync` (every 6 hours) writes one feed per child with the next eight weeks of school events — `anna.ics`, `ben.ics`, named after the child's first name — a `parent.ics` for what Aula sends to the parent, plus the original `skole.ics`. `ics_server` serves them on the app's internal network. Home Assistant reads each one with its built-in **Remote calendar** integration, so every child appears as a calendar of their own (own colour on the family dashboard, the Calendar page, automations).
 
 What goes in:
 
@@ -127,14 +127,26 @@ What stays out: regular lessons (about 40 a week), the meeting booking windows, 
 
 Aula answers that itself: the calendar is fetched once per child (`aula calendar --institution-profile-id <child>`), so an event comes back for the child it belongs to — a kindergarten party stays out of the school child's calendar. An event that belongs to both children comes back for both and is in both feeds. Day lines are cut per child too, from the weekly summary: lessons by the child's profile id, Meebook notes by first name.
 
-Two cases Aula doesn't attribute, both shown in **every** child's feed rather than risk hiding them, and named in the Log (`not attributable to a child`, `important date(s) found in no child's calendar`): events addressed only to the parents' own profiles, and important dates that fall outside both children's calendars. If one of them is clearly one child's, the Log line tells you which — that is the signal to refine the rule.
+### The parent calendar
+
+Some events Aula doesn't send to a child at all, but to the parent — a party "for the whole family", a parents' meeting. Nothing in Aula's calendar says which child those concern, so nothing is guessed. They go to a calendar of their own, **`parent.ics`** (calendar name "Forældre"), and each one gets a description with what Aula says about it, so you can see who is invited:
+
+- **Institution**, and which of your children goes there when the institution matches (`Institution: Børnehaven Stjernen (samme institution som Anna)`).
+- **Invited groups** and **invitees**, who **created** it, the **place**, whether a **reply is due** (and by when), attachments, whether it is on Aula's list of **important dates**, and Aula's own **text**.
+
+The details come from one extra lookup per such event (`aula calendar --event-id`). If a lookup fails, the event is still published with what the calendar row itself says. The Log prints which fields Aula returned for each one.
+
+"The parent" is the guardian profile of the Aula login this app uses. Aula normally sends an invitation to every guardian of the child, so the other parent's login sees the same events; something addressed to that other parent alone would not appear here. Important dates that fall outside both children's calendars go to the parent calendar too.
+
+Because an event Aula attributes to a child stays with that child, nothing is shown twice. If Aula later starts listing an event for a sibling as well (they are invited), the event is in both children's calendars.
 
 ### Setup, per child
 
 1. Run the job (`run_now: calendar`, restart, or wait up to 6 hours) and read the Log: each feed prints its exact address, `calendar_sync: wrote … -> http://<hostname>:8099/<name>.ics`. Until a feed exists it answers 503.
 2. Settings > Devices & services > **Add integration** > **Remote calendar**, give it a name (e.g. `Ben_Kindergarten`) and paste that child's address.
 3. Remote calendar only re-reads its URL once a day. Add each new calendar entity (e.g. `calendar.ben_kindergarten`) to whatever refreshes your calendars — an automation calling `homeassistant.update_entity` every 30 minutes works well — or put a single one in the app's **`ha_calendar_entity`** option so the job refreshes it after every run.
-4. **The calendar you already had** points at `skole.ics`. Set the app's **`school_feed_child`** option to part of that child's name (e.g. `anna`) and `skole.ics` becomes exactly that child's feed, so nothing needs re-adding. Left empty, `skole.ics` holds everyone's events, each titled with the child's name unless it belongs to all of them — useful while migrating, confusing long-term.
+4. **The parent calendar:** add `http://<hostname>:8099/parent.ics` the same way (Remote calendar, e.g. `Aula_Foraeldre`) and add its entity to the same refresh. It exists even when empty, so it can be added at any time.
+5. **The calendar you already had** points at `skole.ics`. Set the app's **`school_feed_child`** option to part of that child's name (e.g. `anna`) and `skole.ics` becomes exactly that child's feed, so nothing needs re-adding. Left empty, `skole.ics` holds everyone's events, each titled with the child's name (or "Forældre") unless it belongs to all of them — useful while migrating, confusing long-term.
 
 If the profile can't be read, the job falls back to one combined feed (`skole.ics` only), as in 1.2.x.
 
