@@ -259,8 +259,15 @@ def summarise(day: Day) -> Summary:
 # --- weekly-summary JSON -> Days -----------------------------------------
 
 
-def days_from_weekly_summary(summary: dict) -> list[Day]:
-    """Build Days from `aula --output json weekly-summary --provider meebook`."""
+def days_from_weekly_summary(summary: dict, child_id: int | None = None,
+                             first_name: str | None = None) -> list[Day]:
+    """Build Days from `aula --output json weekly-summary --provider meebook`.
+
+    The summary covers every child. With child_id / first_name given, only that
+    child's lessons (matched on the event's profile ids; an event that names no
+    profile is kept) and that child's Meebook notes (matched on the first name)
+    are used, so each child gets days of their own.
+    """
     week = re.fullmatch(r"(\d{4})-W(\d{1,2})", summary.get("week") or "")
     if not week:
         return []
@@ -273,6 +280,10 @@ def days_from_weekly_summary(summary: dict) -> list[Day]:
     for ev in summary.get("calendar_events") or []:
         if (ev.get("event_type") or "lesson").lower() != "lesson":
             continue
+        if child_id is not None:
+            owners = ev.get("belongs_to_profiles") or ([ev["belongs_to"]] if ev.get("belongs_to") else [])
+            if owners and child_id not in owners:
+                continue
         try:
             start = datetime.datetime.fromisoformat(ev["start_datetime"])
         except (KeyError, ValueError):
@@ -288,6 +299,9 @@ def days_from_weekly_summary(summary: dict) -> list[Day]:
             d.timetable_end = end
 
     students = summary.get("meebook_weekplan") or []
+    if first_name:
+        students = [s for s in students
+                    if (s.get("name") or "").split(" ")[0].lower() == first_name.lower()]
     with_notes = {s.get("name") for s in students for d in s.get("week_plan", []) if d.get("tasks")}
     for student in students:
         first_name = (student.get("name") or "").split(" ")[0]

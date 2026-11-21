@@ -13,6 +13,9 @@ HA_NOTIFY_SERVICE=$(jq -r '.ha_notify_service' "$OPTS")
 RUN_MITID_LOGIN=$(jq -r '.run_mitid_login' "$OPTS")
 RUN_NOW=$(jq -r '.run_now // "none"' "$OPTS")
 export HA_CALENDAR_ENTITY=$(jq -r '.ha_calendar_entity // empty' "$OPTS")
+# Part of a child's name: which child the original /skole.ics feed should hold.
+# Empty = everyone's events, labelled with the child's name.
+export SCHOOL_FEED_CHILD=$(jq -r '.school_feed_child // empty' "$OPTS")
 
 # Exported rather than plain shell variables: both the run_now block and the
 # scheduler loop below start these modules as child processes of this script,
@@ -168,7 +171,7 @@ _ensure_ics_server() {
   fi
 }
 _ensure_ics_server
-echo "School calendar feed for Home Assistant's Remote calendar: http://${HOSTNAME}:${ICS_PORT}/skole.ics"
+echo "School calendar feeds for Home Assistant's Remote calendar: http://${HOSTNAME}:${ICS_PORT}/<name>.ics -- one per child (e.g. anna.ics, ben.ics) plus skole.ics; calendar_sync prints each exact URL when it runs."
 
 echo "instant-aula: scheduler starting -- digest Mondays 0${DIGEST_HOUR}:00, urgent check every $((URGENT_INTERVAL / 3600))h, calendar every $((CALENDAR_INTERVAL / 3600))h, TZ=$TZ, now $(date '+%F %T %Z')."
 

@@ -1,5 +1,5 @@
 name: "Instant Aula"
-version: "1.2.1"
+version: "1.3.0"
 slug: "instant_aula"
 description: "Weekly Aula school digest, urgent alerts and a school-events calendar for Home Assistant"
 arch:
@@ -16,6 +16,7 @@ options:
   aula_mitid_password: ""
   ha_notify_service: ""
   ha_calendar_entity: ""
+  school_feed_child: ""
   run_mitid_login: false
   run_now: "none"
 schema:
@@ -24,5 +25,6 @@ schema:
   aula_mitid_password: "password?"
   ha_notify_service: "str"
   ha_calendar_entity: "str?"
+  school_feed_child: "str?"
   run_mitid_login: "bool"
   run_now: "list(none|urgent|digest|calendar|both)"

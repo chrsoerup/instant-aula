@@ -1,12 +1,25 @@
 """Publish Aula's school events as an iCalendar feed for Home Assistant.
 
-Writes `skole.ics` -- special school events (trips, days off, school photos,
-...), important dates, the parent meetings you have booked, and one condensed
-line per school day from the Meebook weekplan (see day_summary) -- for
-`ics_server` to serve on the add-on's internal network, where Home Assistant's
-Remote calendar integration reads it. Nothing is written into Home Assistant
-itself, so there is nothing to keep in sync: every run regenerates the whole
-file from Aula, and an event Aula drops simply isn't in the next file.
+Writes one feed per child (`<first name>.ics`, e.g. `anna.ics`, `ben.ics`) --
+special school events (trips, days off, parties, ...), important dates, the
+parent meetings you have booked, and one condensed line per school day from the
+Meebook weekplan (see day_summary) -- for `ics_server` to serve on the add-on's
+internal network, where Home Assistant's Remote calendar integration reads each
+one as its own calendar. Nothing is written into Home Assistant itself, so there
+is nothing to keep in sync: every run regenerates the whole files from Aula, and
+an event Aula drops simply isn't in the next file.
+
+Whose event is whose: Aula answers for itself. The calendar is fetched once per
+child (`aula calendar --institution-profile-id <child>`), so an event comes back
+for the child it belongs to; an event shared by both children comes back for
+both and appears in both feeds. Events that only show up in the combined fetch
+(addressed to the parents' own profiles) can't be attributed and are put in every
+child's feed, and logged, rather than risk hiding them.
+
+`skole.ics` is the original combined feed, kept so a calendar set up before the
+per-child feeds keeps working: with SCHOOL_FEED_CHILD set (part of a child's
+name) it is that child's feed; left empty it holds everything, each entry
+prefixed with the child's name unless it belongs to all of them.
 
 What is deliberately left out:
 
@@ -30,7 +43,10 @@ from __future__ import annotations
 
 import datetime
 import os
+import re
+import socket
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -190,14 +206,15 @@ def _utc(dt: datetime.datetime) -> str:
     return dt.astimezone(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def render_ics(events: list[dict], now: datetime.datetime | None = None) -> str:
+def render_ics(events: list[dict], now: datetime.datetime | None = None,
+               calendar_name: str = CALENDAR_NAME) -> str:
     now = now or datetime.datetime.now(datetime.timezone.utc)
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
         "PRODID:-//instant-aula//calendar_sync//DA",
         "CALSCALE:GREGORIAN",
-        f"X-WR-CALNAME:{CALENDAR_NAME}",
+        f"X-WR-CALNAME:{_escape(calendar_name)}",
         "X-WR-TIMEZONE:Europe/Copenhagen",
     ]
     for ev in sorted(events, key=lambda e: (e["start"], e["uid"])):
@@ -227,30 +244,81 @@ def write_atomically(path: Path, content: str) -> None:
 
 
 # --------------------------------------------------------------------------
+# Children
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Child:
+    id: int      # Aula's institution profile id -- what `aula calendar` filters on
+    name: str
+    first: str
+    slug: str    # feed file name: anna -> anna.ics
+
+
+ALL = Child(0, "", "", "")  # stands in for "everyone" when the profile lists no children
+
+
+def slugify(first_name: str) -> str:
+    s = first_name.lower()
+    for a, b in (("æ", "ae"), ("ø", "oe"), ("å", "aa")):
+        s = s.replace(a, b)
+    return re.sub(r"[^a-z0-9]+", "", s) or "child"
+
+
+def parse_children(profile: dict) -> list[Child]:
+    children, seen = [], set()
+    for c in (profile or {}).get("children") or []:
+        if c.get("id") is None or not c.get("name"):
+            continue
+        first = c["name"].split(" ")[0]
+        slug = slugify(first)
+        if slug in seen:  # two children with the same first name
+            slug = f"{slug}-{c['id']}"
+        seen.add(slug)
+        children.append(Child(int(c["id"]), c["name"], first, slug))
+    return children
+
+
+def load_children(settings) -> list[Child]:
+    try:
+        return parse_children(run_aula(settings, "profile"))
+    except Exception as exc:  # fall back to one combined feed rather than publish nothing
+        print(f"calendar_sync: could not read the children from the profile ({exc}); "
+              "publishing one combined feed")
+        return []
+
+
+# --------------------------------------------------------------------------
 # Job
 # --------------------------------------------------------------------------
 
 
-def _fetch_calendar(settings, today: datetime.date) -> list[dict]:
+def _fetch_calendar(settings, today: datetime.date, child_ids=()) -> list[dict]:
+    """Calendar rows for the next LOOKAHEAD_DAYS; for the given children, or for
+    everything the profile can see when no ids are given."""
+    who = [arg for cid in child_ids for arg in ("--institution-profile-id", str(cid))]
     rows: list[dict] = []
     start = today
     end_of_window = today + datetime.timedelta(days=LOOKAHEAD_DAYS)
     while start < end_of_window:
         end = min(start + datetime.timedelta(days=CHUNK_DAYS - 1), end_of_window)
-        rows += run_aula(settings, "calendar", "--start-date", f"{start:%Y-%m-%d}",
+        rows += run_aula(settings, "calendar", *who, "--start-date", f"{start:%Y-%m-%d}",
                          "--end-date", f"{end:%Y-%m-%d}") or []
         start = end + datetime.timedelta(days=1)
     return rows
 
 
-def day_events(settings, today: datetime.date) -> list[dict]:
-    """One condensed all-day line per school day, this week and next.
+def day_events(settings, today: datetime.date, children: list[Child]) -> dict[int, list[dict]]:
+    """One condensed all-day line per school day and child, this week and next.
 
     Next week mostly yields only timetable gear (Idrætstøj): teachers write the
     Meebook plan during the week itself. A failure here is logged and skipped
-    rather than raised, so the school events above still get published.
+    rather than raised, so the school events still get published. The weekly
+    summary covers every child; each child's lines are cut out of it by the
+    child's profile id (lessons) and first name (Meebook notes).
     """
-    out = []
+    out: dict[int, list[dict]] = {c.id: [] for c in children}
     for offset in (0, 7):
         iso_year, iso_week, _ = (today + datetime.timedelta(days=offset)).isocalendar()
         week = f"{iso_year}-W{iso_week}"
@@ -259,59 +327,124 @@ def day_events(settings, today: datetime.date) -> list[dict]:
         except Exception as exc:
             print(f"calendar_sync: day lines for {week} skipped -- weekly-summary failed: {exc}")
             continue
-        for day in day_summary.days_from_weekly_summary(summary):
-            if day.date < today:
-                continue
-            s = day_summary.summarise(day)
-            if s.title is None:
-                continue
-            print(f"calendar_sync: {day.date} {s.title!r} -- {s.note_count} notes, "
-                  f"{len(s.unmatched)} without a match"
-                  + (f", timetable gear cancelled by notes: {', '.join(s.cancelled)}" if s.cancelled else ""))
-            out.append({
-                "uid": f"aula-day-{day.date:%Y%m%d}@instant-aula",
-                "title": s.title,
-                "start": datetime.datetime.combine(day.date, datetime.time(), TZ),
-                "end": datetime.datetime.combine(day.date + datetime.timedelta(days=1), datetime.time(), TZ),
-                "all_day": True,
-                "location": None,
-                "description": s.description or None,
-            })
+        for c in children:
+            for day in day_summary.days_from_weekly_summary(summary, c.id or None, c.first or None):
+                if day.date < today:
+                    continue
+                s = day_summary.summarise(day)
+                if s.title is None:
+                    continue
+                print(f"calendar_sync: {c.first or 'all'} {day.date} {s.title!r} -- {s.note_count} notes, "
+                      f"{len(s.unmatched)} without a match"
+                      + (f", timetable gear cancelled by notes: {', '.join(s.cancelled)}" if s.cancelled else ""))
+                stem = f"{c.slug}-" if c.slug else ""
+                out[c.id].append({
+                    "uid": f"aula-day-{stem}{day.date:%Y%m%d}@instant-aula",
+                    "title": s.title,
+                    "start": datetime.datetime.combine(day.date, datetime.time(), TZ),
+                    "end": datetime.datetime.combine(day.date + datetime.timedelta(days=1),
+                                                     datetime.time(), TZ),
+                    "all_day": True,
+                    "location": None,
+                    "description": s.description or None,
+                })
     return out
+
+
+def merge_for_everyone(children: list[Child], by_child: dict[int, list[dict]]) -> list[dict]:
+    """The combined feed: every child's events once, titled with the child's name
+    unless the event belongs to all of them."""
+    owners: dict[str, list[str]] = {}
+    first_seen: dict[str, dict] = {}
+    for c in children:
+        for ev in by_child[c.id]:
+            owners.setdefault(ev["uid"], []).append(c.first)
+            first_seen.setdefault(ev["uid"], ev)
+    merged = []
+    for uid, ev in first_seen.items():
+        names = owners[uid]
+        if len(names) < len(children):
+            ev = {**ev, "title": f"{' + '.join(names)}: {ev['title']}"}
+        merged.append(ev)
+    return merged
+
+
+def build_feeds(settings, today: datetime.date, school_child: str = "") -> dict[str, tuple[str, list[dict]]]:
+    """{file name: (calendar name, events)} for every feed to publish."""
+    children = load_children(settings)
+    combined_rows = _fetch_calendar(settings, today)
+    important_rows = run_aula(settings, "important-dates", "--limit", "50") or []
+    meeting_rows = run_aula(settings, "meetings") or []
+    important_ids = {row.get("id") for row in important_rows if row.get("id") is not None}
+    days = day_events(settings, today, children or [ALL])
+
+    skipped = sum(1 for r in combined_rows if (r.get("event_type") or "").lower() in EXCLUDED_TYPES)
+    types = sorted({str(r.get("event_type")) for r in combined_rows
+                    if (r.get("event_type") or "").lower() not in EXCLUDED_TYPES})
+    print(f"calendar_sync: {len(combined_rows)} calendar rows ({skipped} lessons/meetings/birthdays "
+          f"skipped, kept types: {', '.join(types) or 'none'}), {len(important_rows)} important dates, "
+          f"{len(meeting_rows)} booked meetings, {len(children)} children")
+
+    if not children:  # one combined feed, as before the per-child feeds existed
+        events = school_events(combined_rows, important_ids)
+        events += important_date_events(important_rows, {ev["uid"] for ev in events})
+        events += meeting_events(meeting_rows, len({r.get("child_id") for r in meeting_rows if r.get("child_id")}))
+        events += days[ALL.id]
+        return {ICS_FILENAME: (CALENDAR_NAME, events)}
+
+    per_child_rows = {c.id: _fetch_calendar(settings, today, [c.id]) for c in children}
+    attributed = {r["id"] for rows in per_child_rows.values() for r in rows if r.get("id") is not None}
+    unattributed = [r for r in combined_rows if r.get("id") is not None and r["id"] not in attributed
+                    and (r.get("event_type") or "").lower() not in EXCLUDED_TYPES]
+    if unattributed:
+        print(f"calendar_sync: {len(unattributed)} event(s) not attributable to a child, shown for "
+              f"everyone: {', '.join(repr(r.get('title')) for r in unattributed[:5])}")
+    school = {c.id: school_events(per_child_rows[c.id] + unattributed, important_ids) for c in children}
+    known = {ev["uid"] for evs in school.values() for ev in evs}
+    extra_important = important_date_events(important_rows, known)
+    if extra_important:
+        print(f"calendar_sync: {len(extra_important)} important date(s) found in no child's calendar, "
+              f"shown for everyone: {', '.join(repr(e['title']) for e in extra_important[:5])}")
+
+    by_child: dict[int, list[dict]] = {}
+    feeds: dict[str, tuple[str, list[dict]]] = {}
+    for c in children:
+        meetings = meeting_events([m for m in meeting_rows if m.get("child_id") == c.id], 1)
+        by_child[c.id] = school[c.id] + extra_important + meetings + days[c.id]
+        feeds[f"{c.slug}.ics"] = (c.first, by_child[c.id])
+        shared = sum(1 for ev in school[c.id] if all(ev in school[o.id] for o in children))
+        print(f"calendar_sync: {c.first}: {len(by_child[c.id])} events ({len(school[c.id])} school "
+              f"events of which {shared} shared with every child, {len(meetings)} meetings, "
+              f"{len(days[c.id])} day lines)")
+
+    chosen = [c for c in children if school_child and school_child.lower() in c.name.lower()]
+    if len(chosen) == 1:
+        feeds[ICS_FILENAME] = (chosen[0].first, by_child[chosen[0].id])
+    else:
+        if school_child:
+            print(f"calendar_sync: SCHOOL_FEED_CHILD={school_child!r} matches {len(chosen)} children; "
+                  f"{ICS_FILENAME} holds everyone's events")
+        feeds[ICS_FILENAME] = (CALENDAR_NAME, merge_for_everyone(children, by_child))
+    return feeds
 
 
 def main() -> int:
     settings = load_settings()
     today = datetime.datetime.now(TZ).date()
+    feeds = build_feeds(settings, today, os.environ.get("SCHOOL_FEED_CHILD", "").strip())
 
-    calendar_rows = _fetch_calendar(settings, today)
-    important_rows = run_aula(settings, "important-dates", "--limit", "50") or []
-    meeting_rows = run_aula(settings, "meetings") or []
-
-    important_ids = {row.get("id") for row in important_rows if row.get("id") is not None}
-    events = school_events(calendar_rows, important_ids)
-    events += important_date_events(important_rows, {ev["uid"] for ev in events})
-    child_count = len({row.get("child_id") for row in meeting_rows if row.get("child_id")})
-    events += meeting_events(meeting_rows, child_count)
-    events += day_events(settings, today)
-
-    skipped = sum(1 for r in calendar_rows if (r.get("event_type") or "").lower() in EXCLUDED_TYPES)
-    types = sorted({str(r.get("event_type")) for r in calendar_rows
-                    if (r.get("event_type") or "").lower() not in EXCLUDED_TYPES})
-    print(f"calendar_sync: {len(calendar_rows)} calendar rows ({skipped} lessons/meetings/birthdays "
-          f"skipped, kept types: {', '.join(types) or 'none'}), {len(important_rows)} important dates, "
-          f"{len(meeting_rows)} booked meetings -> {len(events)} events")
-
-    path = ics_dir() / ICS_FILENAME
-    write_atomically(path, render_ics(events))
-    print(f"calendar_sync: wrote {path}")
+    host, port = socket.gethostname(), os.environ.get("ICS_PORT", "8099")
+    for filename, (name, events) in feeds.items():
+        path = ics_dir() / filename
+        write_atomically(path, render_ics(events, calendar_name=name))
+        print(f"calendar_sync: wrote {path} ({len(events)} events) -> http://{host}:{port}/{filename}")
 
     entity = os.environ.get("HA_CALENDAR_ENTITY", "").strip()
     if entity:
         try:
             call_service("homeassistant", "update_entity", {"entity_id": entity})
             print(f"calendar_sync: asked Home Assistant to refresh {entity}")
-        except Exception as exc:  # the file is written; a missed refresh only delays it
+        except Exception as exc:  # the files are written; a missed refresh only delays it
             print(f"calendar_sync: could not refresh {entity}: {exc}")
     return 0
 

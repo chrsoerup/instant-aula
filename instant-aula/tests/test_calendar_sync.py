@@ -101,12 +101,13 @@ def test_day_lines_end_to_end(monkeypatch):
         return W47 if args[4] == "2026-W47" else {"week": args[4]}
 
     monkeypatch.setattr(calendar_sync, "run_aula", fake_run_aula)
-    events = calendar_sync.day_events(None, datetime.date(2026, 11, 18))  # Wednesday
+    child = calendar_sync.Child(1, "Barn Testesen", "Barn", "barn")
+    events = calendar_sync.day_events(None, datetime.date(2026, 11, 18), [child])[1]  # a Wednesday
     assert [e["title"] for e in events] == [  # Mon/Tue are past and left out
         "📝 6 noter", "📝 6 noter", "🎒 Slut kl. 13.00 · Medbring ynglingsbamse + fysiske spil"]
     ics = render_ics(events)
     assert "DTSTART;VALUE=DATE:20261120\r\nDTEND;VALUE=DATE:20261121" in ics
-    assert "UID:aula-day-20261120@instant-aula" in ics
+    assert "UID:aula-day-barn-20261120@instant-aula" in ics
     assert "DESCRIPTION:andet\\, Dansk\\, Temauge:\\n- Projekt kl 8.00 -13.00" in ics
 
 
@@ -117,5 +118,6 @@ def test_day_lines_failure_is_skipped(monkeypatch, capsys):
         raise RuntimeError("Aula down")
 
     monkeypatch.setattr(calendar_sync, "run_aula", broken)
-    assert calendar_sync.day_events(None, datetime.date(2026, 11, 18)) == []
+    child = calendar_sync.Child(1, "Barn Testesen", "Barn", "barn")
+    assert calendar_sync.day_events(None, datetime.date(2026, 11, 18), [child]) == {1: []}
     assert "weekly-summary failed: Aula down" in capsys.readouterr().out
