@@ -127,7 +127,9 @@ What stays out: regular lessons (about 40 a week), the meeting booking windows, 
 
 Aula answers that itself: the calendar is fetched once per child (`aula calendar --institution-profile-id <child>`), so an event comes back for the child it belongs to — a kindergarten party stays out of the school child's calendar. An event that belongs to both children comes back for both and is in both feeds. Day lines are cut per child too, from the weekly summary: lessons by the child's profile id, Meebook notes by first name.
 
-Two cases Aula doesn't attribute, both shown in **every** child's feed rather than risk hiding them, and named in the Log (`not attributable to a child`, `important date(s) found in no child's calendar`): events addressed only to the parents' own profiles, and important dates that fall outside both children's calendars. If one of them is clearly one child's, the Log line tells you which — that is the signal to refine the rule.
+Two cases Aula doesn't attribute — events addressed only to the parents' own profiles (a kindergarten party "for the whole family" can be one), and important dates that fall outside both children's calendars. Each is named in the Log (`not attributed by Aula: '…' (type …, profiles […], children […]) -> …`, `important date found in no child's calendar: '…' -> …`), and unless a rule claims it, shown in **every** child's feed rather than risk hiding it.
+
+**Fixing one with a rule:** the **`event_owners`** option takes `word in the title=part of the child's name`, comma separated — for example `julefest=ben, forældremøde=anna`. An unattributed event whose title contains the word goes to that child's feed only (the Log line then ends `-> Ben (event_owners rule)`). Matching ignores case. A rule never overrides what Aula itself attributes, and a rule naming nobody, or both children, is ignored and reported. The `profiles […]` and `children […]` in the Log line show what Aula said, which is what to look at if a general rule is ever worth building: that needs to know which institution each of your own profiles belongs to, which the `aula` command line doesn't report.
 
 ### Setup, per child
 
@@ -135,6 +137,7 @@ Two cases Aula doesn't attribute, both shown in **every** child's feed rather th
 2. Settings > Devices & services > **Add integration** > **Remote calendar**, give it a name (e.g. `Ben_Kindergarten`) and paste that child's address.
 3. Remote calendar only re-reads its URL once a day. Add each new calendar entity (e.g. `calendar.ben_kindergarten`) to whatever refreshes your calendars — an automation calling `homeassistant.update_entity` every 30 minutes works well — or put a single one in the app's **`ha_calendar_entity`** option so the job refreshes it after every run.
 4. **The calendar you already had** points at `skole.ics`. Set the app's **`school_feed_child`** option to part of that child's name (e.g. `anna`) and `skole.ics` becomes exactly that child's feed, so nothing needs re-adding. Left empty, `skole.ics` holds everyone's events, each titled with the child's name unless it belongs to all of them — useful while migrating, confusing long-term.
+5. **Events that land in both feeds** (see the Log) can be pointed at one child with `event_owners`, above.
 
 If the profile can't be read, the job falls back to one combined feed (`skole.ics` only), as in 1.2.x.
 

@@ -13,8 +13,10 @@ Whose event is whose: Aula answers for itself. The calendar is fetched once per
 child (`aula calendar --institution-profile-id <child>`), so an event comes back
 for the child it belongs to; an event shared by both children comes back for
 both and appears in both feeds. Events that only show up in the combined fetch
-(addressed to the parents' own profiles) can't be attributed and are put in every
-child's feed, and logged, rather than risk hiding them.
+(addressed to the parents' own profiles) can't be attributed by Aula. A rule you
+write (EVENT_OWNERS, e.g. "julefest=ben") can assign such an event to one child by
+a word in its title; Aula's own answer is never overridden. What no rule claims is
+put in every child's feed, and logged, rather than risk hiding it.
 
 `skole.ics` is the original combined feed, kept so a calendar set up before the
 per-child feeds keeps working: with SCHOOL_FEED_CHILD set (part of a child's
@@ -280,6 +282,30 @@ def parse_children(profile: dict) -> list[Child]:
     return children
 
 
+def parse_owner_rules(text: str) -> list[tuple[str, str]]:
+    """'julefest=ben, forældremøde=anna' -> [('julefest', 'ben'), ('forældremøde', 'anna')].
+
+    Keyword: a word in the event title. Child: part of the child's name. Both are
+    matched ignoring case. Separate rules with commas, semicolons or new lines.
+    """
+    rules = []
+    for part in re.split(r"[,;\n]", text or ""):
+        keyword, sep, who = part.partition("=")
+        if sep and keyword.strip() and who.strip():
+            rules.append((keyword.strip().casefold(), who.strip().casefold()))
+    return rules
+
+
+def owner_of(title: str | None, rules: list[tuple[str, str]], children: list[Child]) -> Child | None:
+    """The child the first matching rule assigns this title to, if that names exactly one child."""
+    low = (title or "").casefold()
+    for keyword, who in rules:
+        if keyword in low:
+            named = [c for c in children if who in c.name.casefold()]
+            return named[0] if len(named) == 1 else None
+    return None
+
+
 def load_children(settings) -> list[Child]:
     try:
         return parse_children(run_aula(settings, "profile"))
@@ -369,9 +395,11 @@ def merge_for_everyone(children: list[Child], by_child: dict[int, list[dict]]) -
     return merged
 
 
-def build_feeds(settings, today: datetime.date, school_child: str = "") -> dict[str, tuple[str, list[dict]]]:
+def build_feeds(settings, today: datetime.date, school_child: str = "",
+                event_owners: str = "") -> dict[str, tuple[str, list[dict]]]:
     """{file name: (calendar name, events)} for every feed to publish."""
     children = load_children(settings)
+    rules = parse_owner_rules(event_owners)
     combined_rows = _fetch_calendar(settings, today)
     important_rows = run_aula(settings, "important-dates", "--limit", "50") or []
     meeting_rows = run_aula(settings, "meetings") or []
@@ -396,21 +424,36 @@ def build_feeds(settings, today: datetime.date, school_child: str = "") -> dict[
     attributed = {r["id"] for rows in per_child_rows.values() for r in rows if r.get("id") is not None}
     unattributed = [r for r in combined_rows if r.get("id") is not None and r["id"] not in attributed
                     and (r.get("event_type") or "").lower() not in EXCLUDED_TYPES]
-    if unattributed:
-        print(f"calendar_sync: {len(unattributed)} event(s) not attributable to a child, shown for "
-              f"everyone: {', '.join(repr(r.get('title')) for r in unattributed[:5])}")
-    school = {c.id: school_events(per_child_rows[c.id] + unattributed, important_ids) for c in children}
+    child_ids = [c.id for c in children]
+    claimed: dict[int, list[dict]] = {c.id: [] for c in children}   # unattributed, claimed by a rule
+    for_everyone: list[dict] = []
+    for r in unattributed:
+        owner = owner_of(r.get("title"), rules, children)
+        (claimed[owner.id] if owner else for_everyone).append(r)
+        print(f"calendar_sync: not attributed by Aula: {r.get('title')!r} (type {r.get('event_type')}, "
+              f"profiles {r.get('belongs_to_profiles')}, children {child_ids}) -> "
+              + (f"{owner.first} (event_owners rule)" if owner else "shown for everyone"))
+    school = {c.id: school_events(per_child_rows[c.id] + claimed[c.id] + for_everyone, important_ids)
+              for c in children}
     known = {ev["uid"] for evs in school.values() for ev in evs}
-    extra_important = important_date_events(important_rows, known)
-    if extra_important:
-        print(f"calendar_sync: {len(extra_important)} important date(s) found in no child's calendar, "
-              f"shown for everyone: {', '.join(repr(e['title']) for e in extra_important[:5])}")
+    extra_claimed: dict[int, list[dict]] = {c.id: [] for c in children}
+    extra_for_everyone: list[dict] = []
+    for e in important_date_events(important_rows, known):
+        owner = owner_of(e["title"], rules, children)
+        (extra_claimed[owner.id] if owner else extra_for_everyone).append(e)
+        print(f"calendar_sync: important date found in no child's calendar: {e['title']!r} -> "
+              + (f"{owner.first} (event_owners rule)" if owner else "shown for everyone"))
+    for _kw, who in rules:
+        if not [c for c in children if who in c.name.casefold()] or \
+                len([c for c in children if who in c.name.casefold()]) > 1:
+            print(f"calendar_sync: event_owners names {who!r}, which matches "
+                  f"{len([c for c in children if who in c.name.casefold()])} children -- rule ignored")
 
     by_child: dict[int, list[dict]] = {}
     feeds: dict[str, tuple[str, list[dict]]] = {}
     for c in children:
         meetings = meeting_events([m for m in meeting_rows if m.get("child_id") == c.id], 1)
-        by_child[c.id] = school[c.id] + extra_important + meetings + days[c.id]
+        by_child[c.id] = school[c.id] + extra_claimed[c.id] + extra_for_everyone + meetings + days[c.id]
         feeds[f"{c.slug}.ics"] = (c.first, by_child[c.id])
         shared = sum(1 for ev in school[c.id] if all(ev in school[o.id] for o in children))
         print(f"calendar_sync: {c.first}: {len(by_child[c.id])} events ({len(school[c.id])} school "
@@ -431,7 +474,8 @@ def build_feeds(settings, today: datetime.date, school_child: str = "") -> dict[
 def main() -> int:
     settings = load_settings()
     today = datetime.datetime.now(TZ).date()
-    feeds = build_feeds(settings, today, os.environ.get("SCHOOL_FEED_CHILD", "").strip())
+    feeds = build_feeds(settings, today, os.environ.get("SCHOOL_FEED_CHILD", "").strip(),
+                        os.environ.get("EVENT_OWNERS", ""))
 
     host, port = socket.gethostname(), os.environ.get("ICS_PORT", "8099")
     for filename, (name, events) in feeds.items():

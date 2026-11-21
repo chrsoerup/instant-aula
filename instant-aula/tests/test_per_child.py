@@ -11,7 +11,8 @@ import datetime
 import pytest
 
 from instant_aula import calendar_sync, day_summary
-from instant_aula.calendar_sync import Child, build_feeds, parse_children, slugify
+from instant_aula.calendar_sync import (Child, build_feeds, owner_of, parse_children, parse_owner_rules,
+                                        slugify)
 from instant_aula.ics_server import FEED_PATH
 
 TODAY = datetime.date(2026, 11, 18)
@@ -103,8 +104,8 @@ def test_events_not_attributable_to_a_child_are_shown_for_everyone_and_logged(mo
     feeds = build_feeds(None, TODAY, school_child="ben")
     assert "Forældremøde" in titles(feeds, "anna.ics") and "Forældremøde" in titles(feeds, "ben.ics")
     out = capsys.readouterr().out
-    assert "not attributable to a child" in out and "'Forældremøde'" in out
-    assert "important date(s) found in no child's calendar" in out and "Pædagogisk dag" in out
+    assert "not attributed by Aula: 'Forældremøde'" in out and "-> shown for everyone" in out
+    assert "important date found in no child's calendar" in out and "Pædagogisk dag" in out
 
 
 def test_day_lines_are_cut_per_child(monkeypatch):
@@ -186,3 +187,48 @@ def test_days_from_weekly_summary_filters_by_child():
                                      ("/", False), ("/.ics", False)])
 def test_feed_server_only_serves_ics_files_in_the_feed_directory(path, ok):
     assert bool(FEED_PATH.fullmatch(path)) is ok
+
+
+# --- event_owners: a rule for events Aula does not attribute -----------------
+
+
+def test_owner_rules_parse_and_match():
+    rules = parse_owner_rules("julefest=ben, Forældremøde = Anna ;; broken, =x, y=")
+    assert rules == [("julefest", "ben"), ("forældremøde", "anna")]
+    kids = [Child(ANNA, "Anna Testesen", "Anna", "anna"), Child(BEN, "Ben Testesen", "Ben", "ben")]
+    assert owner_of("🎄 Julefest 🎄", rules, kids).first == "Ben"
+    assert owner_of("Forældremøde 3.A", rules, kids).first == "Anna"
+    assert owner_of("Skolefoto", rules, kids) is None
+    assert owner_of("Julefest", [("julefest", "zoe")], kids) is None            # names nobody
+    assert owner_of("Julefest", [("julefest", "testesen")], kids) is None       # names both
+
+
+def test_a_rule_assigns_an_unattributed_event_to_one_child_only(monkeypatch, capsys):
+    monkeypatch.setattr(calendar_sync, "run_aula", make_fake())
+    feeds = build_feeds(None, TODAY, school_child="ben", event_owners="forældremøde=anna")
+    assert "Forældremøde" in titles(feeds, "anna.ics")
+    assert "Forældremøde" not in titles(feeds, "ben.ics")
+    assert "Forældremøde" not in titles(feeds, "skole.ics")                     # skole.ics = Ben's feed
+    assert "-> Anna (event_owners rule)" in capsys.readouterr().out
+
+
+def test_a_rule_never_overrides_what_aula_attributes(monkeypatch):
+    monkeypatch.setattr(calendar_sync, "run_aula", make_fake())
+    # Aula says the party is Anna's (it comes back in her own fetch); the rule says Ben
+    feeds = build_feeds(None, TODAY, school_child="ben", event_owners="juletræsfest=ben")
+    assert "❗ Juletræsfest" in titles(feeds, "anna.ics")
+    assert "❗ Juletræsfest" not in titles(feeds, "ben.ics")
+
+
+def test_a_rule_also_places_important_dates_found_in_no_calendar(monkeypatch):
+    monkeypatch.setattr(calendar_sync, "run_aula", make_fake())
+    feeds = build_feeds(None, TODAY, school_child="ben", event_owners="pædagogisk=anna")
+    assert "❗ Pædagogisk dag" in titles(feeds, "anna.ics")
+    assert "❗ Pædagogisk dag" not in titles(feeds, "ben.ics")
+
+
+def test_a_rule_that_names_no_child_is_ignored_and_reported(monkeypatch, capsys):
+    monkeypatch.setattr(calendar_sync, "run_aula", make_fake())
+    feeds = build_feeds(None, TODAY, school_child="ben", event_owners="forældremøde=zoe")
+    assert "Forældremøde" in titles(feeds, "anna.ics") and "Forældremøde" in titles(feeds, "ben.ics")
+    assert "matches 0 children -- rule ignored" in capsys.readouterr().out

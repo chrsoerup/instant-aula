@@ -16,6 +16,9 @@ export HA_CALENDAR_ENTITY=$(jq -r '.ha_calendar_entity // empty' "$OPTS")
 # Part of a child's name: which child the original /skole.ics feed should hold.
 # Empty = everyone's events, labelled with the child's name.
 export SCHOOL_FEED_CHILD=$(jq -r '.school_feed_child // empty' "$OPTS")
+# "word in title=part of child's name", comma separated: assigns events that Aula
+# does not attribute to a child (e.g. "julefest=ben"). Aula's own answer wins.
+export EVENT_OWNERS=$(jq -r '.event_owners // empty' "$OPTS")
 
 # Exported rather than plain shell variables: both the run_now block and the
 # scheduler loop below start these modules as child processes of this script,
