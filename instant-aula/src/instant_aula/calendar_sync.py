@@ -374,7 +374,7 @@ def _plain(value) -> str:
 
 
 _NAME_KEYS = ("fullName", "displayName", "name", "groupName", "shortName", "aulaName")
-_NESTED_KEYS = ("institutionProfile", "profile", "child", "user", "person")
+_NESTED_KEYS = ("instProfile", "institutionProfile", "profile", "child", "user", "person", "group")
 _ID_KEYS = ("id", "instProfileId", "institutionProfileId", "childInstitutionProfileId")
 
 
@@ -416,6 +416,53 @@ def _profile_id(item) -> int | None:
     return None
 
 
+_RESPONSE_DA = {"accepted": "ja", "accept": "ja", "yes": "ja", "declined": "nej", "decline": "nej", "no": "nej",
+                "tentative": "måske", "maybe": "måske", "waiting": "mangler svar", "unanswered": "mangler svar",
+                "pending": "mangler svar", "none": "mangler svar", "": "mangler svar"}
+_ROLE_DA = {"guardian": "forældre", "parent": "forældre", "child": "børn", "student": "børn",
+            "employee": "personale", "teacher": "personale", "other": "andre"}
+
+
+def _answer(invitee) -> str:
+    """An invitee's reply in Danish; anything unfamiliar is shown as Aula wrote it."""
+    key = str(invitee.get("responseType") or "").strip().lower() if isinstance(invitee, dict) else ""
+    return _RESPONSE_DA.get(key, key)
+
+
+def _reply_summary(invitees: list) -> str:
+    """'31 ja, 12 nej, 167 mangler svar' -- the replies so far, most useful first."""
+    counts: dict[str, int] = {}
+    for i in invitees:
+        counts[_answer(i)] = counts.get(_answer(i), 0) + 1
+    order = ["ja", "nej", "måske", "mangler svar"]
+    keys = [k for k in order if k in counts] + sorted(k for k in counts if k not in order)
+    return ", ".join(f"{counts[k]} {k}" for k in keys)
+
+
+def _own_reply(invitees: list, my_profiles: list[int]) -> str | None:
+    """Your own reply, found by your guardian profile among the invitees."""
+    for i in invitees:
+        if isinstance(i, dict) and _profile_id(i.get("instProfile")) in my_profiles:
+            text = _answer(i)
+            adults, kids = i.get("numberOfAdultParticipants"), i.get("numberOfChildParticipants")
+            who = [f"{adults} {'voksen' if adults == 1 else 'voksne'}" if isinstance(adults, int) and adults else "",
+                   f"{kids} {'barn' if kids == 1 else 'børn'}" if isinstance(kids, int) and kids else ""]
+            who = ", ".join(w for w in who if w)
+            return text + (f" ({who})" if who else "")
+    return None
+
+
+def _roles(groups: list) -> list[str]:
+    out: list[str] = []
+    for g in groups:
+        for role in (g.get("invitedPortalRoles") if isinstance(g, dict) else None) or []:
+            name = _name_of(role) if isinstance(role, dict) else str(role)
+            name = _ROLE_DA.get(name.strip().lower(), name.strip().lower())
+            if name and name not in out:
+                out.append(name)
+    return out
+
+
 def _listed(names: list[str]) -> str:
     return ", ".join(names[:MAX_NAMES]) + (f" og {len(names) - MAX_NAMES} flere" if len(names) > MAX_NAMES else "")
 
@@ -452,7 +499,7 @@ def children_for_event(raw: dict | None, children: list[Child]) -> tuple[list[Ch
 
 def describe_parent_event(raw: dict | None, children: list[Child], event_type: str | None = None,
                           location: str | None = None, important: bool = False,
-                          why: str | None = None) -> str:
+                          why: str | None = None, my_profiles: list[int] | None = None) -> str:
     """What Aula says about an event addressed to the parent, so you can see who is invited.
 
     `raw` is Aula's own record of the event (`aula calendar --event-id`); None when it
@@ -472,9 +519,19 @@ def describe_parent_event(raw: dict | None, children: list[Child], event_type: s
         lines.append(f"Institution: {inst_name or inst_code}"
                      + (f" (samme institution som {' og '.join(same)})" if same else ""))
     if group_names := _names(groups):
-        lines.append(f"Inviterede grupper: {_listed(group_names)}")
-    if invitees := _names(raw.get("invitees") or raw.get("invitedProfiles") or raw.get("participants")):
-        lines.append(f"Inviterede: {_listed(invitees)}")
+        roles = _roles(groups)
+        lines.append(f"Inviterede grupper: {_listed(group_names)}" + (f" ({', '.join(roles)})" if roles else ""))
+    people = raw.get("invitees") or raw.get("invitedProfiles") or raw.get("participants") or []
+    people = people if isinstance(people, list) else []
+    if people:
+        names = _names(people)
+        # a short guest list is listed; a long one (a whole institution) is only counted
+        lines.append("Inviterede: " + (_listed(names) if names and len(people) <= MAX_NAMES
+                                       else f"{len(people)} personer"))
+        if any(isinstance(i, dict) and "responseType" in i for i in people):
+            lines.append(f"Svar indtil nu: {_reply_summary(people)}")
+        if own := _own_reply(people, my_profiles or []):
+            lines.append(f"Dit svar: {own}")
 
     creator = raw.get("creatorName") or raw.get("creatorAulaName") or _name_of(raw.get("creator"))
     if creator:
@@ -521,12 +578,15 @@ _SHAPE_FIELDS = ("creator", "coOrganizers", "invitees", "invitedGroups", "invite
                  "invitedGroupHomeChildren", "attachments", "description", "primaryResource")
 
 
-def _shape(value) -> str:
-    """The structure of a value, never its content: type, list length, field names."""
+def _shape(value, depth: int = 0) -> str:
+    """The structure of a value, never its content: type, list length, field names, and the
+    field names of one level of nested dicts."""
     if isinstance(value, dict):
-        return "{" + ",".join(sorted(value))[:120] + "}"
+        parts = [k + (_shape(value[k], depth + 1) if depth < 1 and isinstance(value[k], (dict, list))
+                      and value[k] else "") for k in sorted(value)]
+        return "{" + ",".join(parts)[:260] + "}"
     if isinstance(value, list):
-        return f"list[{len(value)}]" + (_shape(value[0]) if value else "")
+        return f"list[{len(value)}]" + (_shape(value[0], depth) if value else "")
     return type(value).__name__
 
 
@@ -554,7 +614,8 @@ def place_parent_events(settings, rows: list[dict], extra: list[dict], important
     described with what Aula says about it. {child id: events}."""
     placed: dict[int, list[dict]] = {c.id: [] for c in children}
 
-    def place(ev: dict, raw: dict | None, event_type=None, location=None, important=False) -> None:
+    def place(ev: dict, raw: dict | None, event_type=None, location=None, important=False,
+              my_profiles=None) -> None:
         kids, how = children_for_event(raw, children)
         if kids:
             names = " og ".join(c.first for c in kids)
@@ -563,7 +624,8 @@ def place_parent_events(settings, rows: list[dict], extra: list[dict], important
         else:
             kids = children
             why = "Kunne ikke afgøre hvilket barn det gælder – vist hos alle børn."
-        ev = {**ev, "description": describe_parent_event(raw, children, event_type, location, important, why)}
+        ev = {**ev, "description": describe_parent_event(raw, children, event_type, location, important, why,
+                                                                  my_profiles)}
         for c in kids:
             placed[c.id].append(ev)
         print(f"calendar_sync: addressed to the parent: {ev['title']!r} -> {', '.join(c.first for c in kids)} "
@@ -572,7 +634,7 @@ def place_parent_events(settings, rows: list[dict], extra: list[dict], important
     for r in rows:
         for ev in school_events([r], important_ids):
             place(ev, event_details(settings, r["id"]), r.get("event_type"), r.get("location"),
-                  r["id"] in important_ids)
+                  r["id"] in important_ids, [p for p in r.get("belongs_to_profiles") or [] if isinstance(p, int)])
     for ev in extra:  # important dates that are in no calendar window at all
         place(ev, event_details(settings, _event_id(ev["uid"])), important=True)
     return placed

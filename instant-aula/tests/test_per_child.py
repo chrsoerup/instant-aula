@@ -32,7 +32,8 @@ OUTING = ev(100, "Børnehavens udflugt")                     # Anna's kindergart
 PHOTO = ev(200, "Skolefoto", "2026-12-01T09:00:00+01:00", "2026-12-01T10:00:00+01:00")  # Ben's school
 TRIP = ev(300, "Fælles tur", "2026-12-04T09:00:00+01:00", "2026-12-04T12:00:00+01:00")  # both children
 PARENTS = ev(400, "Forældremøde", "2026-12-08T19:00:00+01:00", "2026-12-08T21:00:00+01:00")  # parent only
-PARTY = ev(600, "Juletræsfest")                            # parent only, and an important date
+MY = 9000001                                               # the guardian's own profile at the kindergarten
+PARTY = {**ev(600, "Juletræsfest"), "belongs_to_profiles": [MY]}   # parent only, and an important date
 
 ROWS = {ANNA: [OUTING, TRIP], BEN: [LESSON, PHOTO, TRIP]}
 COMBINED = [LESSON, OUTING, PHOTO, TRIP, PARENTS, PARTY]    # PARENTS, PARTY: addressed to the guardian only
@@ -45,6 +46,8 @@ PARTY_RAW = {                                              # Aula's own record o
                       {"name": "Kattegat", "institutionName": "Børnehaven Stjernen"}],
     "responseRequired": True, "responseDeadline": "2026-11-27T12:00:00+01:00", "responseStatus": None,
     "description": {"html": "<p>Vi holder juletræsfest med forældre og søskende.</p><p>Medbring en kage.</p>"},
+    "invitees": [{"instProfile": {"id": MY, "name": "Forælder Testesen"}, "numberOfAdultParticipants": 2,
+                  "numberOfChildParticipants": 1, "responseType": "WAITING"}],
 }
 
 MEETING_RAW = {"id": 400, "title": "Forældremøde", "institutionName": "Testskolen", "institutionCode": SCHOOL}
@@ -155,6 +158,7 @@ def test_the_event_says_why_it_is_there_and_who_is_invited(monkeypatch):
     assert "Inviterede grupper: Stuen, Kattegat" in text
     assert "Oprettet af: Pædagog Testesen" in text
     assert "Svar kræves senest 2026-11-27" in text
+    assert "Dit svar: mangler svar (2 voksne, 1 barn)" in text            # found via my profile on the row
     assert "Står på Aulas liste over vigtige datoer." in text
     assert text.endswith("Vi holder juletræsfest med forældre og søskende.\nMedbring en kage.")
     assert "Vist hos Ben: samme institution som invitationen." in event(feeds, "ben.ics", "Forældremøde")["description"]
@@ -254,11 +258,9 @@ def test_description_reads_the_institution_from_the_invited_groups_when_the_even
     assert "Institution: Børnehaven Stjernen (samme institution som Anna)" in describe_parent_event(raw, KIDS)
 
 
-def test_description_text_may_be_a_plain_string_or_html_and_long_invitee_lists_are_cut():
-    plain = describe_parent_event({"description": "Kom og se!"}, KIDS)
-    assert plain.endswith("\n\nKom og se!")
-    many = describe_parent_event({"invitees": [{"displayName": f"Barn {i}"} for i in range(15)]}, KIDS)
-    assert "Barn 0" in many and "Barn 11" in many and "Barn 12" not in many and "og 3 flere" in many
+def test_description_text_may_be_a_plain_string_or_html():
+    assert describe_parent_event({"description": "Kom og se!"}, KIDS).endswith("\n\nKom og se!")
+    assert describe_parent_event({"description": {"html": "<p>Kom og se!</p>"}}, KIDS).endswith("\n\nKom og se!")
 
 
 # --- the fields Aula really returns (names taken from a live record) ---------
@@ -334,6 +336,66 @@ def test_the_log_shows_the_structure_of_the_fields_but_never_names_or_text(monke
     assert "invitees=list[2]{displayName}" in out and "invitedGroupHomeChildren=list[2]{id}" in out
     for private in ("Pædagog Testesen", "Barn A", "Hjælper Hansen", "Kom og vær med", "invitation.pdf"):
         assert private not in out
+
+
+# --- the live record: names one level down, 210 reply records ----------------
+
+
+def reply(pid, name, kind, adults=0, kids=0):
+    return {"instProfile": {"id": pid, "name": name}, "numberOfAdultParticipants": adults,
+            "numberOfChildParticipants": kids, "responseDateTime": None, "responseType": kind}
+
+
+def live(extra_invitees=()):
+    invitees = ([reply(i, f"Gæst {i}", "ACCEPTED") for i in range(31)]
+                + [reply(100 + i, f"Gæst {100 + i}", "DECLINED") for i in range(12)]
+                + [reply(200 + i, f"Gæst {200 + i}", "WAITING") for i in range(166)]
+                + [reply(MY, "Forælder Testesen", "WAITING", adults=2, kids=1)] + list(extra_invitees))
+    return {"creator": {"id": 1, "name": "Pædagog Testesen", "institutionName": "Børnehaven Stjernen",
+                        "institutionCode": KINDERGARTEN, "mainGroup": {"name": "Stuen"}, "role": "employee"},
+            "coOrganizers": [reply(2, "Medarrangør Testesen", "ACCEPTED")],
+            "inviteeGroups": [{"group": {"name": "Stuen"}, "invitedPortalRoles": ["GUARDIAN", "CHILD"]}],
+            "invitees": invitees, "institutionName": "Børnehaven Stjernen", "institutionCode": KINDERGARTEN}
+
+
+def test_names_one_level_down_are_found_and_roles_are_translated():
+    text = describe_parent_event(live(), KIDS, my_profiles=[MY])
+    assert "Inviterede grupper: Stuen (forældre, børn)" in text          # the name is inside `group`
+    assert "Medarrangører: Medarrangør Testesen" in text                 # the name is inside `instProfile`
+    assert "Oprettet af: Pædagog Testesen" in text
+
+
+def test_a_long_invitee_list_is_counted_not_listed():
+    text = describe_parent_event(live(), KIDS, my_profiles=[MY])
+    assert "Inviterede: 210 personer" in text
+    assert "Svar indtil nu: 31 ja, 12 nej, 167 mangler svar" in text
+    assert "Gæst 0" not in text
+
+
+def test_a_short_invitee_list_is_listed_with_names():
+    raw = {"invitees": [reply(1, "Anna A", "ACCEPTED"), reply(2, "Bo B", "DECLINED"), reply(3, "Cy C", "going")]}
+    text = describe_parent_event(raw, KIDS)
+    assert "Inviterede: Anna A, Bo B, Cy C" in text
+    assert "Svar indtil nu: 1 ja, 1 nej, 1 going" in text                 # unfamiliar replies shown as written
+
+
+def test_your_own_reply_is_found_by_your_guardian_profile():
+    assert "Dit svar: mangler svar (2 voksne, 1 barn)" in describe_parent_event(live(), KIDS, my_profiles=[MY])
+    answered = live()
+    answered["invitees"][-1] = reply(MY, "Forælder Testesen", "ACCEPTED", adults=1)
+    assert "Dit svar: ja (1 voksen)" in describe_parent_event(answered, KIDS, my_profiles=[MY])
+    assert "Dit svar" not in describe_parent_event(live(), KIDS, my_profiles=[123])      # not among them
+    assert "Dit svar" not in describe_parent_event(live(), KIDS)                         # profile unknown
+
+
+def test_the_log_shows_one_level_of_nested_field_names_and_still_no_values(monkeypatch, capsys):
+    from instant_aula.calendar_sync import event_details
+    monkeypatch.setattr(calendar_sync, "run_aula", lambda settings, *a: live())
+    event_details(None, 600)
+    out = capsys.readouterr().out
+    assert "invitees=list[210]{instProfile{id,name}" in out and "inviteeGroups=list[1]{group{name}" in out
+    for private in ("Forælder Testesen", "Gæst 0", "Pædagog Testesen", "Medarrangør", "Stuen"):
+        assert private not in out.split("shapes (names only, no values):")[1]
 
 
 # --- helpers ------------------------------------------------------------------
